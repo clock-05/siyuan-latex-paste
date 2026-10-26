@@ -39,6 +39,10 @@ npm test           # 105 个用例
 npm run typecheck  # 类型检查
 ```
 
+## 作者
+
+clock-05、DeepSeek
+
 ## License
 
 MIT

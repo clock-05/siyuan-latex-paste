@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "description": "SiYuan plugin: math formulas in and out — paste them as native formulas, copy them as Markdown",
+  "author": "clock-05, DeepSeek",
   "scripts": {
     "dev": "node scripts/build.mjs --watch",
     "build": "node scripts/build.mjs",

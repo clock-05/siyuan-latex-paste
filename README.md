@@ -39,6 +39,10 @@ npm test           # 105 test cases
 npm run typecheck  # type check
 ```
 
+## Authors
+
+clock-05, DeepSeek
+
 ## License
 
 MIT
