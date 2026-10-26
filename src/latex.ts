@@ -147,6 +147,18 @@ function spansParagraphs(body: string): boolean {
 }
 
 /**
+ * 内容里有没有换行。
+ *
+ * 专门给 `\( ... \)` 用：思源（Lute）的行内公式**不能跨行** ——
+ * `parse/inline_math.go` 的 `matchInlineMathEnd` 一遇到 `\n` 就返回 -1，
+ * 于是 `$a\nb$` 根本不是公式，只会在正文里留下两个多余的 `$`。
+ * 所以跨行的 `\( ... \)` 一律不转：要么是排版断开的，要么是落单的定界符配错了对。
+ */
+function spansLines(body: string): boolean {
+  return body.includes("\n");
+}
+
+/**
  * 去掉代码段（围栏代码块 / 行内代码），只留下正文。
  *
  * 检测阶段必须和转换阶段用同一套「哪里算代码」的规则：代码里的 \( ... \)
@@ -248,9 +260,10 @@ function convertSegment(segment: string, options: LatexConvertOptions): LatexCon
   // 4. \( ... \)
   if (options.inline) {
     text = text.replace(PAREN_RE, (matched: string, inner: string) => {
-      // 两个反斜杠括号之间夹着一整段中文、或者跨了空行：这是落单的定界符配错了对。
-      // 行内公式不可能跨空行，硬转会把两段正文并进一个 $…$ 里
-      if (looksLikeProse(inner) || spansParagraphs(inner)) {
+      // 两个反斜杠括号之间夹着一整段中文、或者跨了行：不转。
+      // 思源的行内公式不能跨行（Lute 的 matchInlineMathEnd 见到 \n 就放弃），
+      // 硬转只会得到 `$a\nb$` 这种既不渲染、又留下两个多余 $ 的畸形结果
+      if (looksLikeProse(inner) || spansLines(inner)) {
         return matched;
       }
       count++;

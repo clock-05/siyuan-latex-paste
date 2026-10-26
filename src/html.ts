@@ -224,7 +224,8 @@ export function restoreMath(markdown: string, segments: MathSegment[]): string {
       return "";
     }
     if (!segments[Number(index)].display) {
-      return `${prefix}$${body}$`;
+      // 行内公式不能跨行（Lute 见到换行就不认），多行的先压成一行
+      return `${prefix}$${body.replace(/\s*\n\s*/g, " ")}$`;
     }
     // 有前缀（列表缩进、引用 >）说明公式已经在某个容器里，
     // 空行由容器的块结构提供，这里再加就会把容器撑断。

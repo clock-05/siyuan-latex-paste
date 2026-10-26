@@ -196,6 +196,21 @@ test("跨空行的定界符配不成对，原样保留", () => {
   assert.equal(convert(dollar).text, dollar);
 });
 
+test("跨行的 \\( \\) 不转成行内公式", () => {
+  // 思源的行内公式不能跨行：Lute 的 matchInlineMathEnd 见到 \n 就返回 -1，
+  // 生成 `$a\nb$` 既不渲染，还白留两个 $
+  const input = "见 \\( a + b\n+ c \\) 结束";
+  const result = convert(input);
+  assert.equal(result.count, 0);
+  assert.equal(result.text, input);
+});
+
+test("跨行的 \\[ \\] 照常做成公式块（块级本来就支持多行）", () => {
+  const result = convert("\\[a +\nb\\]");
+  assert.match(result.text, /\$\$\na \+\nb\n\$\$/);
+  assert.equal(result.count, 1);
+});
+
 test("空字符串安全", () => {
   assert.deepEqual(convert(""), { text: "", count: 0 });
 });
