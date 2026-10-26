@@ -377,6 +377,28 @@ test("HTML 里没公式时回退纯文本，不能把公式丢掉", async () => 
   assert.match(resolved.textPlain, /\$x\$/, "公式来自纯文本，不能被 HTML 覆盖掉");
 });
 
+test("网页代码块里的 LaTeX 定界符保持原样", async () => {
+  const { handler } = await createPlugin();
+  const { resolved } = firePaste(handler, {
+    textHTML: "<p>示例：</p><pre><code>print(\\(x\\))</code></pre>",
+    textPlain: "示例：\n\nprint(\\(x\\))",
+  });
+  assert.ok(resolved, "有公式提示，应该接管");
+  assert.match(resolved.textPlain, /```\nprint\(\\\(x\\\)\)\n```/, "代码块的围栏和原文都要保住");
+  assert.doesNotMatch(resolved.textPlain, /print\(\$x\$\)/, "代码里的定界符不是公式");
+});
+
+test("HTML 粘贴不会堆出三四个连续空行", async () => {
+  const { handler } = await createPlugin();
+  const { resolved } = firePaste(handler, {
+    textHTML: "<p>第一段</p><p>\\[a=b\\]</p><p>第三段</p><p>\\[c=d\\]</p><p>第五段</p>",
+    textPlain: "第一段\n\\[a=b\\]\n第三段\n\\[c=d\\]\n第五段",
+  });
+  assert.ok(resolved, "应该接管");
+  assert.doesNotMatch(resolved.textPlain, /\n{3,}/, "多出来的空行会在思源里变成空段落");
+  assert.match(resolved.textPlain, /第一段\n\n\$\$\na=b\n\$\$\n\n第三段/);
+});
+
 // ---- 复制通道：思源 → 其他 Markdown 软件 ----
 
 function makeCopyTarget(html) {
@@ -655,6 +677,23 @@ test("块图标菜单点击后写入带 $ 的 Markdown", async () => {
 
   assert.match(written, /\$f\\circ R_\\theta\$/, "行内公式要带 $ 定界符");
   assert.doesNotMatch(written, /🏷/, "块图标不能混进正文");
+});
+
+test("块图标菜单：块里没有公式时不挂这一项", async () => {
+  const { plugin } = await createPlugin();
+  const handler = plugin.listeners.get("click-blockicon");
+
+  const block = document.createElement("div");
+  block.setAttribute("data-type", "NodeParagraph");
+  block.textContent = "一段普通文字";
+
+  const items = [];
+  handler({
+    detail: { blockElements: [block], menu: { addItem: (item) => items.push(item) } },
+  });
+
+  // 这条命令对没有公式的块什么也复制不出来，挂上去只会让用户点完收到一句「没有公式」
+  assert.equal(items.length, 0);
 });
 
 test("右键菜单里有复制为 Markdown", async () => {
@@ -1084,6 +1123,30 @@ test("光标停在列表项里用命令复制时，带出列表符号而不是�
   await withCaret(textNode, () => command.callback());
 
   assert.match(written, /^- 条目 \$x\$/m, "光标在项里也要带上 - 标记，不能只吐一段裸文字");
+});
+
+test("编辑器根也带 data-node-id 时，命令只复制光标所在的那一块", async () => {
+  const { plugin } = await createPlugin();
+  const container = makeCopyTarget(
+    '<div data-node-id="p1" data-type="NodeParagraph">' +
+      `<div contenteditable="true">上面的块 ${inlineMath("a", "a")}</div></div>` +
+      '<div data-node-id="p2" data-type="NodeParagraph">' +
+      `<div contenteditable="true">光标这里 ${inlineMath("b", "b")}</div></div>`,
+  );
+  // 有些思源版本会给 .protyle-wysiwyg 本身也挂一个 data-node-id。
+  // 往上爬的时候不挡住它，「光标所在的块」就会变成整篇文档
+  container.setAttribute("data-node-id", "doc-root");
+
+  const textNode = container.querySelector('[data-node-id="p2"] [contenteditable]').firstChild;
+  let written = null;
+  mockClipboard(async (text) => {
+    written = text;
+  });
+  const command = plugin.commands.find((item) => item.langKey === "commandCopyAsMarkdown");
+  await withCaret(textNode, () => command.callback());
+
+  assert.match(written, /光标这里 \$b\$/, "应该复制光标所在的块");
+  assert.doesNotMatch(written, /上面的块/, "不能把整篇文档当成一个块复制出去");
 });
 
 test("SuperBlock 里的两个块不会粘在一起", async () => {

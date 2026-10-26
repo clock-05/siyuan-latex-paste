@@ -6,7 +6,7 @@
  * 转成 Markdown 之后再按原样还原成 $...$ / $$...$$。
  */
 
-import { looksLikeMath } from "./latex";
+import { LATEX_ENV_NAMES, looksLikeMath } from "./latex";
 
 export interface MathSegment {
   /** 原始 LaTeX（已去掉定界符） */
@@ -18,10 +18,9 @@ export interface MathSegment {
 export interface StashResult {
   html: string;
   segments: MathSegment[];
+  /** 因为落在代码块里而被跳过的公式个数（含 LaTeX 定界符的那几种） */
+  skipped: number;
 }
-
-const ENV_NAMES =
-  "equation\\*?|align\\*?|alignat\\*?|flalign\\*?|gather\\*?|multline\\*?|eqnarray\\*?|displaymath|math";
 
 /** 一条正则覆盖各种写法，用命名组区分类型 */
 const MATH_IN_TEXT = new RegExp(
@@ -31,7 +30,7 @@ const MATH_IN_TEXT = new RegExp(
     `(?<!\\\\)\\$\\$(?<dollar>[\\s\\S]*?)(?<!\\\\)\\$\\$`, // $$ ... $$
     `(?<!\\\\)\\\\\\[(?<bracket>[\\s\\S]*?)(?<!\\\\)\\\\\\]`, // \[ ... \]
     `(?<!\\\\)\\\\\\((?<paren>[\\s\\S]*?)(?<!\\\\)\\\\\\)`, // \( ... \)
-    `(?<!\\\\)\\\\begin\\{(?<envName>${ENV_NAMES})\\}(?<envBody>[\\s\\S]*?)(?<!\\\\)\\\\end\\{\\k<envName>\\}`,
+    `(?<!\\\\)\\\\begin\\{(?<envName>${LATEX_ENV_NAMES})\\}(?<envBody>[\\s\\S]*?)(?<!\\\\)\\\\end\\{\\k<envName>\\}`,
     `(?<!\\\\)\\$(?<mdInline>[^$\\n]{1,200}?)\\$(?!\\d)`, // $ ... $
   ].join("|"),
   "gu",
@@ -46,6 +45,14 @@ export const HTML_TOKEN_RE = new RegExp(`${OPEN}(\\d+)${CLOSE}`, "g");
 
 /** 整行只有一个占位符（行首最多带缩进和 `>`）—— 块级公式最常见的样子 */
 const TOKEN_LINE_RE = new RegExp(`^([ \\t>]*)${OPEN}(\\d+)${CLOSE}[ \\t]*$`, "gm");
+
+/**
+ * 代码类标签的开合。
+ *
+ * 这些区域里的 `\(`、`$` 只是普通字符：网页里的代码示例经常带 LaTeX 源码，
+ * 抽成公式会让代码变样（`\(` 变成 `$`、块级公式还会把代码块撑开）。
+ */
+const CODE_TAG_RE = /^<\s*(\/?)\s*(?:pre|code|script|style)\b/i;
 
 /** 把一段纯文本里的公式抽成占位符 */
 function stashInText(text: string, segments: MathSegment[]): string {
@@ -88,13 +95,32 @@ function decodeOne(value: string | undefined): string | undefined {
 }
 
 /**
+ * 代码块里没被抽取的公式个数。
+ *
+ * 这些定界符在 HTML 里是代码，不能转；但纯文本那份载荷里它们照样会被算成
+ * 「公式」。调用方拿这个数去对账，才不会误判成「HTML 把公式抽丢了」而回退。
+ */
+function countSkipped(text: string): number {
+  let total = 0;
+  for (const match of text.matchAll(MATH_IN_TEXT)) {
+    const groups = match.groups ?? {};
+    // 只数 countLatexDelimiters 也认的那几种（\( \)、\[ \]、环境），
+    // 否则 $ … $ 会让这个数虚高，把真丢公式的 HTML 放过去
+    if (groups.bracket !== undefined || groups.paren !== undefined || groups.envName !== undefined) {
+      total += 1;
+    }
+  }
+  return total;
+}
+
+/**
  * 在 HTML 字符串上抽公式，只处理标签之间的文本片段。
  * PDF / 网页复制时公式有可能被拆进多个 span，这类情况这里抓不全，
  * 调用方需要用 textPlain 的公式数量做兜底判断。
  */
 export function stashMathInHtml(html: string, segments: MathSegment[] = []): StashResult {
   if (!html) {
-    return { html: "", segments };
+    return { html: "", segments, skipped: 0 };
   }
 
   // <br> 会把 \[ 和公式内容切成互不相干的文本片段，先摊平成换行
@@ -105,21 +131,45 @@ export function stashMathInHtml(html: string, segments: MathSegment[] = []): Sta
   // 逐次 += 拼接在大字符串上会退化成 O(n²)
   const chunks: string[] = [];
   let cursor = 0;
+  let codeDepth = 0;
+  let skipped = 0;
   const tagRe = /<[^>]*>/g;
   let match: RegExpExecArray | null;
 
   while ((match = tagRe.exec(source)) !== null) {
     if (match.index > cursor) {
-      chunks.push(stashInText(source.slice(cursor, match.index), segments));
+      const text = source.slice(cursor, match.index);
+      if (codeDepth > 0) {
+        // 代码里的 \( 和 $ 只是普通字符，抽成公式会让代码块变形
+        chunks.push(text);
+        skipped += countSkipped(text);
+      } else {
+        chunks.push(stashInText(text, segments));
+      }
     }
-    chunks.push(match[0]);
-    cursor = match.index + match[0].length;
+    const tag = match[0];
+    const boundary = CODE_TAG_RE.exec(tag);
+    if (boundary) {
+      if (boundary[1]) {
+        codeDepth = Math.max(0, codeDepth - 1);
+      } else if (!/\/>$/.test(tag)) {
+        codeDepth += 1;
+      }
+    }
+    chunks.push(tag);
+    cursor = match.index + tag.length;
   }
   if (cursor < source.length) {
-    chunks.push(stashInText(source.slice(cursor), segments));
+    const rest = source.slice(cursor);
+    if (codeDepth > 0) {
+      chunks.push(rest);
+      skipped += countSkipped(rest);
+    } else {
+      chunks.push(stashInText(rest, segments));
+    }
   }
 
-  return { html: chunks.join(""), segments };
+  return { html: chunks.join(""), segments, skipped };
 }
 
 /**
@@ -263,6 +313,10 @@ export function extractMathNodes(root: HTMLElement, segments: MathSegment[] = []
   for (const node of nodes) {
     // 外层节点顺手把内层一起换掉了，内层已经从树里脱离，不能再处理一遍
     if (!root.contains(node)) {
+      continue;
+    }
+    // 代码块里的公式标记只是代码内容（别人贴的 HTML 示例就长这样）
+    if (typeof node.closest === "function" && node.closest("pre, code")) {
       continue;
     }
     const latex = readLatex(node);

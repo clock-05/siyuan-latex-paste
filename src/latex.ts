@@ -43,8 +43,8 @@ const CODE_SEGMENT = /(```[\s\S]*?```|~~~[\s\S]*?~~~|`+[^`\n]*?`+)/g;
 /** 已经是思源块级公式的内容，先整段保护起来 */
 const DISPLAY_MATH = /\$\$[\s\S]*?\$\$/g;
 
-/** KaTeX 认识、且通常独立成块的 LaTeX 环境 */
-const ENV_NAMES =
+/** KaTeX 认识、且通常独立成块的 LaTeX 环境。html.ts 也用它，别复制一份 */
+export const LATEX_ENV_NAMES =
   "equation\\*?|align\\*?|alignat\\*?|flalign\\*?|gather\\*?|multline\\*?|eqnarray\\*?|displaymath|math";
 
 /**
@@ -54,7 +54,7 @@ const ENV_NAMES =
  * 再处理就会拼出 \$ … \$ 这种畸形结果。前面的 (?<!\\) 就是为了挡住这种情况。
  */
 const ENV_RE = new RegExp(
-  `(?<!\\\\)\\\\begin\\{(${ENV_NAMES})\\}([\\s\\S]*?)(?<!\\\\)\\\\end\\{\\1\\}`,
+  `(?<!\\\\)\\\\begin\\{(${LATEX_ENV_NAMES})\\}([\\s\\S]*?)(?<!\\\\)\\\\end\\{\\1\\}`,
   "g",
 );
 const BRACKET_RE = /(?<!\\)\\\[([\s\S]*?)(?<!\\)\\\]/g;
@@ -64,6 +64,9 @@ const PLACEHOLDER_OPEN = "\u0000";
 const PLACEHOLDER_CLOSE = "\u0001";
 
 const placeholder = (index: number) => `${PLACEHOLDER_OPEN}M${index}${PLACEHOLDER_CLOSE}`;
+
+/** 还原占位符用；提出来避免每个片段都重新编译一次正则 */
+const PLACEHOLDER_RE = new RegExp(`${PLACEHOLDER_OPEN}M(\\d+)${PLACEHOLDER_CLOSE}`, "g");
 
 /** 生成行内公式。内容里的 $ 需要转义，否则会破坏定界。 */
 function inlineMath(inner: string): string {
@@ -83,16 +86,66 @@ function blockMath(inner: string): string {
   return `\n\n$$\n${body.replace(/(?<!\\)\$/g, "\\$")}\n$$\n\n`;
 }
 
+/** 判断「独占一行」时最多往两侧看多少字符：再长只能是空白，当行首/行尾即可 */
+const STANDALONE_SCAN = 512;
+
 /**
  * 判断一段内容是否独占一行。
  * 只用来决定 $$ ... $$ 要不要原样保留：独占行时思源自己就能解析成公式块。
+ *
+ * 这里逐字符往两边扫，**不能**用 whole.slice(0, offset) 再跑正则 ——
+ * 一次粘贴可能有上万个公式，每次都切一遍整篇就是 O(n²)（实测 20k 个 \[ \] 要 3.4 秒）。
  */
 function isStandalone(whole: string, offset: number, length: number): boolean {
-  const before = whole.slice(0, offset);
-  const after = whole.slice(offset + length);
-  const lineStart = /(^|\n)[ \t]*$/.test(before);
-  const lineEnd = /^[ \t]*(\n|$)/.test(after);
-  return lineStart && lineEnd;
+  const isBlank = (ch: string) => ch === " " || ch === "\t" || ch === "\r";
+
+  for (let i = offset - 1, steps = 0; i >= 0 && steps < STANDALONE_SCAN; i -= 1, steps += 1) {
+    const ch = whole[i];
+    if (ch === "\n") {
+      break;
+    }
+    if (!isBlank(ch)) {
+      return false;
+    }
+  }
+  for (let i = offset + length, steps = 0; i < whole.length && steps < STANDALONE_SCAN; i += 1, steps += 1) {
+    const ch = whole[i];
+    if (ch === "\n") {
+      return true;
+    }
+    if (!isBlank(ch)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * 两个定界符之间写的是「一段话」，不是公式。
+ *
+ * 行中间的 $$ 会被升级成公式块。万一文中有一个落单的 $$，它会和几百字之后
+ * 的下一个 $$ 配成一对，把整段中文包进公式里 —— 这比不转换更糟。
+ * 判据刻意收得很窄：**含中文，且一个数学符号都没有**。正常公式里哪怕有
+ * \text{若}，前面也有反斜杠，不会被误判。
+ */
+function looksLikeProse(body: string): boolean {
+  if (!/[\u4e00-\u9fa5]/.test(body)) {
+    return false;
+  }
+  return !/[\\^_=<>+\-*/]/.test(body);
+}
+
+/**
+ * 去掉代码段（围栏代码块 / 行内代码），只留下正文。
+ *
+ * 检测阶段必须和转换阶段用同一套「哪里算代码」的规则：代码里的 \( ... \)
+ * 只是普通字符，算进公式数量会让「HTML 里公式抽全了没有」这个比较得出错误结论。
+ */
+function stripCode(input: string): string {
+  return input
+    .split(CODE_SEGMENT)
+    .map((part, index) => (index % 2 === 1 ? "" : part))
+    .join("");
 }
 
 /** 处理一段「非代码」文本 */
@@ -117,7 +170,13 @@ function convertSegment(segment: string, options: LatexConvertOptions): LatexCon
         stash.push(matched);
         return placeholder(stash.length - 1);
       }
-      const converted = blockMath(matched.slice(2, -2));
+      const inner = matched.slice(2, -2);
+      // 落单的 $$ 可能一直配到后文去，中间隔着整段中文。这种不要包成公式
+      if (looksLikeProse(inner)) {
+        stash.push(matched);
+        return placeholder(stash.length - 1);
+      }
+      const converted = blockMath(inner);
       if (!converted) {
         stash.push(matched);
         return placeholder(stash.length - 1);
@@ -133,10 +192,16 @@ function convertSegment(segment: string, options: LatexConvertOptions): LatexCon
 
   // 2. LaTeX 环境
   if (options.environments) {
-    text = text.replace(ENV_RE, (_matched, env: string, body: string) => {
+    text = text.replace(ENV_RE, (matched: string, env: string, body: string) => {
+      const converted = blockMath(`\\begin{${env}}${body}\\end{${env}}`);
+      if (!converted) {
+        return matched;
+      }
       count++;
       blockInserted = true;
-      return blockMath(`\\begin{${env}}${body}\\end{${env}}`);
+      // 和第 1 步一样藏起来：环境体里可能还带着 \[ \]，不能让它再被包一层
+      stash.push(converted);
+      return placeholder(stash.length - 1);
     });
   }
 
@@ -146,17 +211,24 @@ function convertSegment(segment: string, options: LatexConvertOptions): LatexCon
   // 这是刻意的取舍 —— 公式是主体，显示效果优先于段落连贯；降级成行内反而会让
   // 带 \int、\sum 的式子挤成一团，上下标全靠右。
   if (options.display) {
-    text = text.replace(BRACKET_RE, (matched: string, inner: string) => {
-      const converted = blockMath(inner);
-      if (!converted) {
-        return matched;
-      }
-      count++;
-      blockInserted = true;
-      // 同样收进 stash：后面还有 \( ... \) 一步，别让它钻进来
-      stash.push(converted);
-      return placeholder(stash.length - 1);
-    });
+    text = text.replace(
+      BRACKET_RE,
+      (matched: string, inner: string, offset: number, whole: string) => {
+        // 句子中间的 \[见附录\] 不是公式，原样留着
+        if (!isStandalone(whole, offset, matched.length) && looksLikeProse(inner)) {
+          return matched;
+        }
+        const converted = blockMath(inner);
+        if (!converted) {
+          return matched;
+        }
+        count++;
+        blockInserted = true;
+        // 同样收进 stash：后面还有 \( ... \) 一步，别让它钻进来
+        stash.push(converted);
+        return placeholder(stash.length - 1);
+      },
+    );
   }
 
   // 4. \( ... \)
@@ -169,10 +241,7 @@ function convertSegment(segment: string, options: LatexConvertOptions): LatexCon
 
   // 5. 还原被保护的块级公式
   if (stash.length > 0) {
-    text = text.replace(
-      new RegExp(`${PLACEHOLDER_OPEN}M(\\d+)${PLACEHOLDER_CLOSE}`, "g"),
-      (_matched, index: string) => stash[Number(index)],
-    );
+    text = text.replace(PLACEHOLDER_RE, (_matched, index: string) => stash[Number(index)]);
   }
 
   // 块级公式前后会堆出多余空行，压回最多一空行
@@ -248,10 +317,12 @@ export function hasMarkdownMath(input: string): boolean {
   if (!input) {
     return false;
   }
-  if (MD_DISPLAY_RE.test(input)) {
+  // 代码里的 $$ 是普通字符，算进来会让整段代码被当成「含公式」而丢掉原有格式
+  const body = stripCode(input);
+  if (MD_DISPLAY_RE.test(body)) {
     return true;
   }
-  const matches = input.match(MD_INLINE_RE);
+  const matches = body.match(MD_INLINE_RE);
   if (!matches) {
     return false;
   }
@@ -263,8 +334,10 @@ export function countLatexDelimiters(input: string): number {
   if (!input) {
     return 0;
   }
-  const paren = input.match(PAREN_RE)?.length ?? 0;
-  const bracket = input.match(BRACKET_RE)?.length ?? 0;
-  const env = input.match(ENV_RE)?.length ?? 0;
+  // 和 convertLatex 用同一套代码段规则：代码里的定界符不算，也不会被转换
+  const body = stripCode(input);
+  const paren = body.match(PAREN_RE)?.length ?? 0;
+  const bracket = body.match(BRACKET_RE)?.length ?? 0;
+  const env = body.match(ENV_RE)?.length ?? 0;
   return paren + bracket + env;
 }

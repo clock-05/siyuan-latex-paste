@@ -136,9 +136,12 @@ module.exports = class LatexPaste extends Plugin {
     html: { count: number; hasMath: boolean },
   ): string | null {
     if (textHTML && html.hasMath) {
-      const { markdown, count } = this.htmlToMarkdown(textHTML);
-      if (count > 0 && count >= plain.count) {
-        this.log("走 HTML → Markdown 路径", { count, markdown });
+      const { markdown, count, skipped } = this.htmlToMarkdown(textHTML);
+      // count 是 HTML 里真抽出来的公式，skipped 是躺在代码块里、本来就不该转的。
+      // 两个加起来才对得上纯文本那份统计 —— 否则代码里的 \(x\) 会被当成
+      // 「HTML 把公式抽丢了」，一路回退到纯文本，连代码块的围栏都保不住。
+      if ((count > 0 || skipped > 0) && count + skipped >= plain.count) {
+        this.log("走 HTML → Markdown 路径", { count, skipped, markdown });
         return markdown;
       }
       // HTML 里明明有公式却一个都没抽出来，说明被标签拆碎还被转义了，
@@ -146,7 +149,7 @@ module.exports = class LatexPaste extends Plugin {
       //
       // 注意这里没有「有 HTML 就转」的兜底分支：HTML 里没有公式标记时，
       // 转出来的 Markdown 会丢掉纯文本里那份能用的公式，公式优先于格式。
-      this.log("HTML 里的公式没抽全，回退纯文本", { count, plainCount: plain.count });
+      this.log("HTML 里的公式没抽全，回退纯文本", { count, skipped, plainCount: plain.count });
     }
 
     const result = convertLatex(textPlain);
@@ -158,6 +161,25 @@ module.exports = class LatexPaste extends Plugin {
       return textPlain;
     }
     return null;
+  }
+
+  /**
+   * 两条粘贴路径共用的管道：先判断有没有公式，再决定走 HTML 还是纯文本。
+   * 返回 null 表示这次粘贴不该接管。
+   */
+  private convertClipboard(textPlain: string, textHTML: string): string | null {
+    if (textHTML.length > MAX_HTML_LENGTH) {
+      this.log("HTML 太大，跳过处理", { length: textHTML.length });
+      return null;
+    }
+    const plain = this.detect(textPlain);
+    const html = this.detect(textHTML ? stripHtml(textHTML) : "", textHTML);
+    // 来源到底给了什么，排查时全靠这条
+    this.log("收到粘贴", { textPlain, textHTML, plain, html });
+    if (!plain.hasMath && !html.hasMath) {
+      return null;
+    }
+    return this.convertPayload(textPlain, textHTML, plain, html);
   }
 
   /** 路径一：思源事件总线 */
@@ -186,19 +208,7 @@ module.exports = class LatexPaste extends Plugin {
 
       const textPlain = detail.textPlain || "";
       const textHTML = detail.textHTML || "";
-      if (textHTML.length > MAX_HTML_LENGTH) {
-        this.log("HTML 太大，跳过处理", { length: textHTML.length });
-        return;
-      }
-      const plain = this.detect(textPlain);
-      const html = this.detect(textHTML ? stripHtml(textHTML) : "", textHTML);
-      // 来源到底给了什么，排查时全靠这条
-      this.log("收到粘贴", { textPlain, textHTML, plain, html });
-      if (!plain.hasMath && !html.hasMath) {
-        return;
-      }
-
-      const converted = this.convertPayload(textPlain, textHTML, plain, html);
+      const converted = this.convertClipboard(textPlain, textHTML);
       // 没有 HTML 时，纯文本本来就会走 Markdown 解析，不用多此一举
       if (!converted || (converted === textPlain && !textHTML)) {
         return;
@@ -247,17 +257,7 @@ module.exports = class LatexPaste extends Plugin {
 
       const textPlain = data.getData("text/plain") || "";
       const textHTML = data.getData("text/html") || "";
-      if (textHTML.length > MAX_HTML_LENGTH) {
-        this.log("HTML 太大，跳过处理", { length: textHTML.length });
-        return;
-      }
-      const plain = this.detect(textPlain);
-      const html = this.detect(textHTML ? stripHtml(textHTML) : "", textHTML);
-      if (!plain.hasMath && !html.hasMath) {
-        return;
-      }
-
-      const converted = this.convertPayload(textPlain, textHTML, plain, html);
+      const converted = this.convertClipboard(textPlain, textHTML);
       if (!converted) {
         return;
       }
@@ -389,8 +389,9 @@ module.exports = class LatexPaste extends Plugin {
     } catch (error) {
       console.warn("[latex-paste] clipboard API 失败，改用 execCommand", error);
     }
+    let area: HTMLTextAreaElement | null = null;
     try {
-      const area = document.createElement("textarea");
+      area = document.createElement("textarea");
       area.value = text;
       area.setAttribute("readonly", "");
       area.style.position = "fixed";
@@ -398,12 +399,13 @@ module.exports = class LatexPaste extends Plugin {
       area.style.opacity = "0";
       document.body.appendChild(area);
       area.select();
-      const ok = document.execCommand("copy");
-      document.body.removeChild(area);
-      return ok;
+      return document.execCommand("copy");
     } catch (error) {
       console.error("[latex-paste] 写入剪贴板失败", error);
       return false;
+    } finally {
+      // 失败时也要收走，否则临时 textarea 会留在 DOM 里
+      area?.remove();
     }
   }
 
@@ -434,16 +436,22 @@ module.exports = class LatexPaste extends Plugin {
     const anchor = selection.anchorNode;
     const element =
       anchor?.nodeType === Node.TEXT_NODE ? anchor.parentElement : (anchor as HTMLElement | null);
-    if (!element || typeof element.closest !== "function" || !element.closest(".protyle-wysiwyg")) {
+    if (!element || typeof element.closest !== "function") {
+      return null;
+    }
+    const root = element.closest(".protyle-wysiwyg");
+    if (!root) {
       return null;
     }
 
     // 光标停在列表项、表格单元格、引用块里面时，「最近的那个块」只是一段文字。
-    // 只复制它的话，列表符号、表格、引用结构全没了。所以往上爬到编辑器下的第一层块
+    // 只复制它的话，列表符号、表格、引用结构全没了。所以往上爬到编辑器下的第一层块。
+    // 到编辑器根就停：有些版本给 .protyle-wysiwyg 本身也挂了 data-node-id，
+    // 不挡住的话「光标所在的块」会变成整篇文档。
     let block = element.closest("[data-node-id]") as HTMLElement | null;
-    while (block) {
+    while (block && block !== root) {
       const parent = block.parentElement?.closest("[data-node-id]") as HTMLElement | null;
-      if (!parent || !parent.closest(".protyle-wysiwyg")) {
+      if (!parent || parent === root || !root.contains(parent)) {
         break;
       }
       block = parent;
@@ -461,6 +469,11 @@ module.exports = class LatexPaste extends Plugin {
     const blocks: HTMLElement[] = detail?.blockElements ?? [];
     const menu = detail?.menu;
     if (!blocks.length || !menu || typeof menu.addItem !== "function") {
+      return;
+    }
+    // 块里没有公式时这条命令什么也复制不出来（renderMarkdown 会直接返回空），
+    // 挂上去只会让用户点完收到一句「没有公式」。和右键菜单保持一致：有公式才出现
+    if (!blocks.some((block) => hasMathNodes(block.innerHTML))) {
       return;
     }
     menu.addItem({
@@ -553,7 +566,7 @@ module.exports = class LatexPaste extends Plugin {
     return this.turndown;
   }
 
-  private htmlToMarkdown(html: string): { markdown: string; count: number } {
+  private htmlToMarkdown(html: string): { markdown: string; count: number; skipped: number } {
     let bodyHtml = html;
     const segments: MathSegment[] = [];
     try {
@@ -568,11 +581,14 @@ module.exports = class LatexPaste extends Plugin {
       // DOMParser 不可用时直接用原始字符串
     }
 
-    const { html: stashed } = stashMathInHtml(bodyHtml, segments);
-    const restored = restoreMath(this.turndownService().turndown(stashed), segments);
+    const stashed = stashMathInHtml(bodyHtml, segments);
+    const restored = restoreMath(this.turndownService().turndown(stashed.html), segments);
     const result = convertLatex(restored);
+    // 块级公式还原时会前后各带一个空行，和段落之间原有的空行叠起来就是三四个，
+    // 粘进思源会多出空段落。和复制路径用同一套折叠规则
+    const markdown = collapseBlankLines(result.text);
     // 已还原成思源公式的部分 + 转换阶段新处理的定界符
-    return { markdown: result.text, count: segments.length + result.count };
+    return { markdown, count: segments.length + result.count, skipped: stashed.skipped };
   }
 
   /**

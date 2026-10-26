@@ -144,6 +144,40 @@ test("countLatexDelimiters 统计各类定界符", () => {
   assert.equal(countLatexDelimiters("没有公式"), 0);
 });
 
+// ---- 代码段：检测要和转换用同一套规则 ----
+
+test("统计公式个数时跳过代码块和行内代码", () => {
+  const block = "代码：\n\n```\nprint(\\(x\\))\n```\n\n正文 \\(y\\)";
+  assert.equal(countLatexDelimiters(block), 1, "围栏里的不算，只数正文那一个");
+  assert.equal(countLatexDelimiters("行内 `\\(x\\)` 也不算"), 0);
+});
+
+test("代码块里的 $$ 不算 Markdown 公式", () => {
+  assert.equal(hasMarkdownMath("```\necho $$5$$\n```"), false);
+  assert.equal(hasMarkdownMath("正文 $x^2+1=y$"), true);
+});
+
+// ---- 落单的定界符不能把正文吞进公式 ----
+
+test("落单的 $$ 夹着整段中文时，不包成公式", () => {
+  const input = "价格 $$5 和 $$10 元";
+  const result = convert(input);
+  assert.equal(result.count, 0);
+  assert.equal(result.text, input, "看不出是公式就别动，包进去只会得到一条报错");
+});
+
+test("公式里有 \\text{中文} 时照常转成公式块", () => {
+  const result = convert("公式 $$ \\text{若 } x>0 $$ 成立");
+  assert.match(result.text, /\$\$\n\\text\{若 \} x>0\n\$\$/, "有反斜杠就是公式，不能被中文吓退");
+  assert.equal(result.count, 1);
+});
+
+test("句子中间的 \\[见附录\\] 不当公式", () => {
+  const result = convert("见 \\[见附录\\] 一节");
+  assert.equal(result.count, 0);
+  assert.equal(result.text, "见 \\[见附录\\] 一节");
+});
+
 test("空字符串安全", () => {
   assert.deepEqual(convert(""), { text: "", count: 0 });
 });

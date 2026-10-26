@@ -1,33 +1,22 @@
+/**
+ * 思源插件 API 的最小类型声明。
+ *
+ * 只声明实际用到的成员：插件没有设置面板、不写存储，所以 Setting / saveData
+ * 这些一概不留 —— 留着会让人以为某处还在用，也让 `--noUnusedLocals` 之外的
+ * 死代码更难发现。
+ */
 declare module "siyuan" {
   export class Plugin {
     constructor(options: any);
-    name: string;
     i18n: Record<string, string>;
     eventBus: {
       on(type: string, listener: (event: CustomEvent<any>) => any): void;
       off(type: string, listener: (event: CustomEvent<any>) => any): void;
-      once(type: string, listener: (event: CustomEvent<any>) => any): void;
     };
-    setting: Setting;
-    loadData(key: string): Promise<any>;
-    saveData(key: string, value: any): Promise<any>;
-    removeData(key: string): Promise<any>;
     addCommand(command: any): void;
-    addTopBar(options: any): HTMLElement;
-    addIcons(svg: string): void;
     onload(): void | Promise<void>;
     onunload(): void;
     onLayoutReady(): void;
-  }
-
-  export class Setting {
-    constructor(options: { confirmCallback?: () => void; destroyCallback?: () => void });
-    addItem(options: {
-      title: string;
-      description?: string;
-      createActionElement?: () => HTMLElement;
-    }): void;
-    open(name: string): void;
   }
 
   export function showMessage(message: string, timeout?: number, type?: string): void;
