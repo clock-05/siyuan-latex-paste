@@ -48,20 +48,18 @@ class MockPlugin {
   onLayoutReady() {}
 }
 
-class MockSetting {
-  constructor(options) {
-    this.options = options;
-    this.items = [];
-  }
-  addItem(item) {
-    this.items.push(item);
-  }
-}
+// 记录 showMessage 的调用，测试要断言「成功时不发消息、失败时发一次」
+const shownMessages = [];
 
 const originalLoad = Module._load;
 Module._load = function (request, parent, isMain) {
   if (request === "siyuan") {
-    return { Plugin: MockPlugin, Setting: MockSetting, showMessage: () => {} };
+    return {
+      Plugin: MockPlugin,
+      showMessage: (message, timeout) => {
+        shownMessages.push({ message, timeout });
+      },
+    };
   }
   return originalLoad.call(this, request, parent, isMain);
 };
@@ -70,12 +68,9 @@ const require = Module.createRequire(import.meta.url);
 const LatexPaste = require(path.join(root, "dist", "index.js"));
 Module._load = originalLoad;
 
-async function createPlugin(settings) {
+async function createPlugin() {
   const plugin = new LatexPaste({});
   await plugin.onload();
-  if (settings) {
-    Object.assign(plugin.settings, settings);
-  }
   const handler = plugin.listeners.get("paste");
   assert.ok(handler, "插件应该注册了 paste 监听");
   return { plugin, handler };
@@ -169,24 +164,12 @@ test("equation 环境转换", async () => {
   assert.match(resolved.textPlain, /\$\$/);
 });
 
-test("总开关关闭时不处理", async () => {
-  const { handler } = await createPlugin({ enabled: false });
-  const { prevented } = firePaste(handler, { textPlain: "\\(x\\)" });
-  assert.equal(prevented, false);
-});
-
 test("预览模式下不处理", async () => {
   const { handler } = await createPlugin();
   const { prevented } = firePaste(handler, {
     textPlain: "\\(x\\)",
     protyle: { options: { mode: "preview" } },
   });
-  assert.equal(prevented, false);
-});
-
-test("关闭行内转换后 \\( \\) 保持原样", async () => {
-  const { handler } = await createPlugin({ convertInline: false });
-  const { prevented } = firePaste(handler, { textPlain: "\\(x\\)" });
   assert.equal(prevented, false);
 });
 
@@ -220,15 +203,6 @@ test("金额之类的 $ 不会被误判成公式", async () => {
   const { prevented } = firePaste(handler, {
     textHTML: "<p>这本书 $5 到 $10 之间</p>",
     textPlain: "这本书 $5 到 $10 之间",
-  });
-  assert.equal(prevented, false);
-});
-
-test("关闭 Markdown 公式开关后不再处理 $ … $", async () => {
-  const { handler } = await createPlugin({ markdownMath: false });
-  const { prevented } = firePaste(handler, {
-    textHTML: "<p>方程 $x^2+1=y$ 成立</p>",
-    textPlain: "方程 $x^2+1=y$ 成立",
   });
   assert.equal(prevented, false);
 });
@@ -284,6 +258,30 @@ test("align 环境里的 &amp; 会还原成 &", async () => {
   });
   assert.doesNotMatch(resolved.textPlain, /&amp;/);
   assert.match(resolved.textPlain, /a &= b/);
+});
+
+test("整篇 Obsidian 笔记粘贴：行中间的 $$ 全部变成公式块", async () => {
+  const { handler } = await createPlugin();
+  // 摘自用户实测的笔记（8-9.md）：公式夹在中文句子里，且带 aligned 环境
+  const doc = [
+    " 设 $$ f=\\sum_{j=1}^n f_j d\\bar z_j,\\qquad v=\\sum_{j=1}^n v_j d\\bar z_j, $$ 记Levi矩阵 ",
+    "$$ \\begin{aligned} \\left\\langle A^{1/2}f,A^{-1/2}v\\right\\rangle &= f^*v\\\\ &= \\sum_j f_j\\overline{v_j}. \\end{aligned} $$ 代入得 ",
+    "由于$\\varphi$是强多次调和函数，于是 $$ \\boxed{ |F(f)|^2 \\leq \\int_\\Omega |v|^2 e^{-\\varphi} } $$ ",
+  ].join("\n");
+
+  const { prevented, resolved } = firePaste(handler, { textHTML: "", textPlain: doc });
+
+  assert.equal(prevented, true, "整篇都要接管，不能放行给思源自己解析");
+  assert.equal(resolved.textHTML, "", "清掉 HTML 才能走 Markdown 解析");
+
+  const out = resolved.textPlain;
+  assert.equal((out.match(/\$\$/g) || []).length % 2, 0, "$$ 必须成对");
+  // 思源编辑器里 $$ 只有独占行才是公式块
+  assert.doesNotMatch(out, /\S[ \t]*\$\$[^\n]*\n/, "$$ 前面不能还挂着正文");
+  // 中文只能待在公式外面
+  assert.doesNotMatch(out, /\$[^$\n]*[\u4e00-\u9fa5][^$\n]*\$/);
+  // aligned 的 begin / end 必须留在同一个块里
+  assert.match(out, /\\begin\{aligned\}[\s\S]*?\\end\{aligned\}/);
 });
 
 // ---- DOM 兜底路径 ----
@@ -435,23 +433,20 @@ function mockClipboard(writeText) {
   });
 }
 
+/**
+ * 模拟「复制选区为 Markdown」，返回 { prevented, store }。
+ *
+ * 以前这里模拟的是 window 的 copy 事件（onCopy 那条 DOM 路径）。那条已经删了：
+ * 思源会 preventDefault 之后自己用 Electron 异步写剪贴板，DOM 里改的数据必然被覆盖。
+ * 现在复制只走菜单 / 命令这些主动入口，所以这里直接取选区结果，
+ * `prevented` 的含义变成「插件会不会接管这次复制」。
+ */
 function fireCopy(plugin) {
-  const store = {};
-  let prevented = false;
-  const clipboardData = {
-    types: [],
-    getData: (type) => store[type] ?? "",
-    setData: (type, value) => {
-      store[type] = value;
-    },
-  };
-  plugin.onCopy({
-    clipboardData,
-    preventDefault: () => {
-      prevented = true;
-    },
-  });
-  return { prevented, store };
+  const markdown = plugin.selectionToMarkdown();
+  if (!markdown) {
+    return { prevented: false, store: {} };
+  }
+  return { prevented: true, store: { "text/plain": markdown } };
 }
 
 test("复制行内公式时补上 $ 定界符", async () => {
@@ -485,30 +480,12 @@ test("KaTeX 渲染结果也能还原出 LaTeX", async () => {
   assert.match(store["text/plain"], /\$\\frac\{a\}\{b\}\$/);
 });
 
-test("复制时保留 text/siyuan，思源内部粘贴不受影响", async () => {
-  const { plugin } = await createPlugin();
-  const container = makeCopyTarget(
-    '<div data-type="NodeMathBlock" data-content="E=mc^2"><div class="protyle-attr">x</div></div>',
-  );
-  const { store } = withSelection(container, () => fireCopy(plugin));
-  assert.match(store["text/siyuan"], /NodeMathBlock/);
-});
-
 test("没有公式的复制完全不动，交回思源原生行为", async () => {
   const { plugin } = await createPlugin();
   const container = makeCopyTarget('<div contenteditable="true">一段普通文字</div>');
   const { prevented, store } = withSelection(container, () => fireCopy(plugin));
   assert.equal(prevented, false);
   assert.equal(store["text/plain"], undefined);
-});
-
-test("关闭复制开关后不接管", async () => {
-  const { plugin } = await createPlugin({ copyAsMarkdown: false });
-  const container = makeCopyTarget(
-    '<div data-type="NodeMathBlock" data-content="E=mc^2"></div>',
-  );
-  const { prevented } = withSelection(container, () => fireCopy(plugin));
-  assert.equal(prevented, false);
 });
 
 test("公式节点藏在 data-siyuan 注释里时也能还原", async () => {
@@ -757,13 +734,12 @@ test("onload 期间不写插件存储（否则多窗口会反复重载）", asyn
     "onload 里 saveData 会写入 petal 目录，思源把变更广播给所有窗口，" +
       "每个窗口的插件随之重载并再次写入，形成无限重启",
   );
-  assert.equal(plugin.settings.debug, false, "调试日志默认关闭，正式版不该持续写盘");
 });
 
-test("注册失败但没有开调试时，也不写诊断", async () => {
+test("注册失败时也不写插件存储", async () => {
   const plugin = new LatexPaste({});
-  // addTopBar 抛错，制造一个 FAIL 步骤
-  plugin.addTopBar = () => {
+  // addCommand 抛错，制造一个 FAIL 步骤
+  plugin.addCommand = () => {
     throw new Error("boom");
   };
   await plugin.onload();
@@ -771,8 +747,56 @@ test("注册失败但没有开调试时，也不写诊断", async () => {
   assert.deepEqual(
     Object.keys(plugin.stored),
     [],
-    "调试开关关闭时，即使有注册失败也不该落盘",
+    "插件没有设置项，任何情况下都不该落盘（多窗口会反复重载）",
   );
+});
+
+// ---- 启动提示：成功静默，失败才提示 ----
+
+test("加载成功时不弹任何提示", async () => {
+  shownMessages.length = 0;
+  const plugin = new LatexPaste({});
+  await plugin.onload();
+  plugin.onLayoutReady();
+
+  assert.deepEqual(shownMessages, [], "正常加载不该打扰用户");
+});
+
+test("注册失败时弹一次失败提示（不看 debug 开关）", async () => {
+  shownMessages.length = 0;
+  const plugin = new LatexPaste({});
+  plugin.addCommand = () => {
+    throw new Error("boom");
+  };
+  await plugin.onload();
+  plugin.onLayoutReady();
+
+  assert.equal(shownMessages.length, 1, "失败就该提示一次");
+  assert.match(shownMessages[0].message, /1 项注册失败/);
+});
+
+test("插件禁用后不残留上一次的提示", async () => {
+  shownMessages.length = 0;
+  const plugin = new LatexPaste({});
+  plugin.addCommand = () => {
+    throw new Error("boom");
+  };
+  await plugin.onload();
+  plugin.onunload();
+  plugin.onLayoutReady();
+
+  assert.deepEqual(shownMessages, [], "卸载后不该再冒出上一轮的失败提示");
+});
+
+test("顶栏不再注册按钮（复制入口只剩块图标菜单 / 右键菜单 / 命令）", async () => {
+  const plugin = new LatexPaste({});
+  let topBarCalled = false;
+  plugin.addTopBar = () => {
+    topBarCalled = true;
+  };
+  await plugin.onload();
+
+  assert.equal(topBarCalled, false, "顶栏按钮已按要求移除");
 });
 
 // ---- 结构化内容：列表 / 标题 / 引用 / 代码块 ----

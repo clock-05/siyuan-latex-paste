@@ -1,24 +1,6 @@
 {
-  "enabled": "Enable formula conversion",
-  "enabledDesc": "Convert LaTeX delimiters into SiYuan formulas when pasting",
-  "keepHtml": "Keep rich text formatting",
-  "keepHtmlDesc": "When formulas are detected, content copied from web pages or Word is converted to Markdown first, keeping bold, lists and links. Disable to handle plain-text pastes only.",
-  "inline": "Inline formulas \\( … \\)",
-  "inlineDesc": "Convert to $ … $",
-  "display": "Display formulas \\[ … \\]",
-  "displayDesc": "Convert to $$ … $$ when on its own line, fall back to inline when inside a paragraph",
-  "environments": "LaTeX environments",
-  "environmentsDesc": "Convert \\begin{equation}, \\begin{align} and friends into $$ … $$",
-  "bare": "Bare LaTeX (experimental)",
-  "bareDesc": "Treat lines of undelimited LaTeX as display formulas. May misdetect normal text.",
-  "markdownMath": "Markdown formulas $ … $",
-  "markdownMathDesc": "Also parse $x^2+1=y$ as formulas — pastes carrying HTML would otherwise keep them as plain text",
-  "copyAsMarkdown": "Copy out as Markdown",
-  "copyAsMarkdownDesc": "When copying formulas out of SiYuan, restore the $ delimiters so Obsidian, Typora and friends render them as math again",
   "commandCopyAsMarkdown": "Copy as Markdown (with formulas)",
   "commandCopyDone": "Copied as Markdown",
   "commandCopyEmpty": "No formula in the selection",
-  "commandCopyFailed": "Copy failed, see console",
-  "debug": "Debug log",
-  "debugDesc": "Log every paste to the browser console and show a toast on load. Turn off once everything works."
+  "commandCopyFailed": "Copy failed, see console"
 }

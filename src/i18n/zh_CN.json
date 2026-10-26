@@ -1,24 +1,6 @@
 {
-  "enabled": "启用公式转换",
-  "enabledDesc": "粘贴时自动把 LaTeX 定界符转换成思源公式",
-  "keepHtml": "保留富文本格式",
-  "keepHtmlDesc": "有公式时把网页、Word 复制来的内容转成 Markdown 再粘贴，加粗、列表、链接等格式会保留；关闭后只处理纯文本粘贴",
-  "inline": "行内公式 \\( … \\)",
-  "inlineDesc": "转换为 $ … $",
-  "display": "块级公式 \\[ … \\]",
-  "displayDesc": "独占一行时转换为 $$ … $$，夹在文字中间时降级为行内公式",
-  "environments": "LaTeX 环境",
-  "environmentsDesc": "\\begin{equation}、\\begin{align} 等环境转换为 $$ … $$",
-  "bare": "裸 LaTeX（实验性）",
-  "bareDesc": "没有定界符的 LaTeX 按整行识别并包成块级公式，可能误判普通文本",
-  "markdownMath": "Markdown 公式 $ … $",
-  "markdownMathDesc": "剪贴板里已经写成 $x^2+1=y$ 时，也要让思源按公式解析（否则带 HTML 的粘贴会被当成普通文字）",
-  "copyAsMarkdown": "复制出去时转成 Markdown",
-  "copyAsMarkdownDesc": "从思源复制含公式的内容时，把公式还原成带 $ 定界符的 Markdown，粘到 Obsidian、Typora 等软件里能直接当公式用",
   "commandCopyAsMarkdown": "复制为 Markdown（含公式）",
   "commandCopyDone": "已复制为 Markdown",
   "commandCopyEmpty": "选区里没有公式",
-  "commandCopyFailed": "复制失败，详见控制台",
-  "debug": "调试日志",
-  "debugDesc": "在浏览器控制台输出每次粘贴的处理过程，插件加载时会弹一条提示。排查问题时打开，平时可以关掉"
+  "commandCopyFailed": "复制失败，详见控制台"
 }

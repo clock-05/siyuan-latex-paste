@@ -1,8 +1,8 @@
 {
   "name": "siyuan-latex-paste",
-  "version": "0.2.12",
+  "version": "1.0.0",
   "private": true,
-  "description": "SiYuan plugin: paste LaTeX and get real math formulas",
+  "description": "SiYuan plugin: math formulas in and out — paste them as native formulas, copy them as Markdown",
   "scripts": {
     "dev": "node scripts/build.mjs --watch",
     "build": "node scripts/build.mjs",

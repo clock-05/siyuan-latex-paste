@@ -3,12 +3,11 @@ import assert from "node:assert/strict";
 import {
   convertLatex,
   countLatexDelimiters,
-  hasLatexDelimiters,
   hasMarkdownMath,
   looksLikeMath,
 } from "./.build/latex.mjs";
 
-const DEFAULT = { inline: true, display: true, environments: true, bare: false };
+const DEFAULT = { inline: true, display: true, environments: true };
 const convert = (text, options = DEFAULT) => convertLatex(text, options);
 
 test("行内公式 \\( ... \\) 转成 $ ... $", () => {
@@ -21,8 +20,11 @@ test("块级公式 \\[ ... \\] 独占行时转成 $$ 块", () => {
   assert.equal(result.count, 1);
 });
 
-test("\\[ ... \\] 夹在文字中间时降级为行内公式", () => {
-  assert.equal(convert("由 \\[x=1\\] 可得").text, "由 $x=1$ 可得");
+test("\\[ ... \\] 夹在文字中间也做成公式块", () => {
+  // 块级定界符一律当块：宁可把一句话切成三段，也不让带 \int 的式子挤成行内
+  const result = convert("由 \\[x=1\\] 可得");
+  assert.equal(result.text, "由 \n\n$$\nx=1\n$$\n\n 可得");
+  assert.equal(result.count, 1);
 });
 
 test("equation 环境转成 $$ 块", () => {
@@ -41,6 +43,42 @@ test("已经是 $$ 的公式不会被二次包裹", () => {
   const input = "$$\nE=mc^2\n$$";
   assert.equal(convert(input).text.trim(), input.trim());
   assert.equal(convert(input).count, 0);
+});
+
+// ---- 行中间的 $$：思源编辑器不认「行级派生块级」----
+// Lute 的 inline_math.go 里，ProtyleWYSIWYG 模式下遇到 $$ 只吃掉一个 $ 当文本，
+// 剩下的 $ 会去和后面公式的 $ 配对，把中文吞进行内公式、把 \begin{aligned} 切成两半。
+
+test("行中间的 $$ 升级成公式块", () => {
+  const result = convert("设 $$ A(z)=\\left(x\\right) $$ 记Levi矩阵");
+  assert.equal(result.text, "设 \n\n$$\nA(z)=\\left(x\\right)\n$$\n\n 记Levi矩阵");
+  assert.equal(result.count, 1);
+});
+
+test("行中间的 aligned 环境不会被切碎", () => {
+  const result = convert("设 $$ \\begin{aligned} a &= b\\\\ &= c \\end{aligned} $$ 完");
+  assert.match(result.text, /\\begin\{aligned\} a &= b\\\\ &= c \\end\{aligned\}/);
+  assert.equal(result.count, 1);
+});
+
+test("升级成公式块后，块内的 align 环境不会被再包一层", () => {
+  const result = convert("设 $$ \\begin{align} x &= 1 \\end{align} $$ 完");
+  // 只有一对外层 $$，里面直接是环境本身
+  assert.equal((result.text.match(/\$\$/g) || []).length, 2);
+  assert.match(result.text, /^\$\$\n\\begin\{align\}/m);
+});
+
+test("中文段落不会被行内公式吞掉", () => {
+  const doc = [
+    " 设 $$ f=\\sum_{j=1}^n f_j $$ 记Levi矩阵 $$ A(z)=\\left(x\\right) $$ ",
+    "由于$\\varphi$是强多次调和函数，于是 $$ \\begin{aligned} a &= b\\\\ &= c \\end{aligned} $$ 完",
+  ].join("\n");
+  const result = convert(doc);
+
+  assert.equal((result.text.match(/\$\$/g) || []).length % 2, 0, "$$ 必须成对");
+  assert.doesNotMatch(result.text, /\$[^$\n]*[\u4e00-\u9fa5][^$\n]*\$/, "中文不该出现在公式里");
+  assert.match(result.text, /记Levi矩阵/);
+  assert.match(result.text, /由于\$\\varphi\$是强多次调和函数/);
 });
 
 test("行内公式内容里的 $ 会被转义", () => {
@@ -77,21 +115,10 @@ test("转换是幂等的", () => {
   assert.equal(once, twice);
 });
 
-test("裸 LaTeX 默认不处理", () => {
+test("没有定界符的公式不处理", () => {
   const input = "\\frac{a}{b} = c";
   assert.equal(convert(input).text, input);
   assert.equal(convert(input).count, 0);
-});
-
-test("打开 bare 选项后裸公式被包裹", () => {
-  const result = convert("\\frac{a}{b} = c", { ...DEFAULT, bare: true });
-  assert.match(result.text, /\$\$\n\\frac\{a\}\{b\} = c\n\$\$/);
-});
-
-test("bare 不误伤普通中文行和路径", () => {
-  const options = { ...DEFAULT, bare: true };
-  assert.equal(convert("这是一段普通的中文", options).count, 0);
-  assert.equal(convert("C:\\Users\\clock\\Desktop", options).count, 0);
 });
 
 test("嵌套：\\[ 里含环境时只包一层", () => {
@@ -117,12 +144,6 @@ test("countLatexDelimiters 统计各类定界符", () => {
   assert.equal(countLatexDelimiters("没有公式"), 0);
 });
 
-test("hasLatexDelimiters 快速判断", () => {
-  assert.equal(hasLatexDelimiters("一段 \\(x\\) 文字"), true);
-  assert.equal(hasLatexDelimiters("\\begin{equation}x\\end{equation}"), true);
-  assert.equal(hasLatexDelimiters("纯中文文本"), false);
-});
-
 test("空字符串安全", () => {
   assert.deepEqual(convert(""), { text: "", count: 0 });
 });
@@ -146,39 +167,4 @@ test("金额和普通词不算公式", () => {
 test("$dA$ 这种短公式能被 hasMarkdownMath 识别", () => {
   assert.equal(hasMarkdownMath("记 $dA$ 为面积测度"), true);
   assert.equal(hasMarkdownMath("这本书 $5 到 $10 之间"), false);
-});
-
-// ---- 裸 LaTeX：只处理「一行就是一个公式」的情况 ----
-
-const BARE = { ...DEFAULT, bare: true };
-const convertBare = (text) => convertLatex(text, BARE);
-
-test("align* 环境不会被裸 LaTeX 再包一层", () => {
-  const result = convertBare("\\begin{align*}\nx &= 1 \\\\\ny &= 2\n\\end{align*}");
-  assert.equal(result.count, 1);
-  assert.equal(
-    result.text,
-    "\n\n$$\n\\begin{align*}\nx &= 1 \\\\\ny &= 2\n\\end{align*}\n$$\n\n",
-    "整段环境应该只包一层 $$，不能出现嵌套",
-  );
-});
-
-test("文件路径里的 \\frac 不会被当成公式", () => {
-  for (const path of ["C:\\Users\\x\\frac\\a.txt", "D:/data/sqrt/out.csv", "~/.config/frac"]) {
-    const result = convertBare(path);
-    assert.equal(result.count, 0, `${path} 不是公式`);
-    assert.equal(result.text, path, "路径要原样保留");
-  }
-});
-
-test("没配对的 \\begin 原样不动", () => {
-  const result = convertBare("\\begin{align}\na\n");
-  assert.equal(result.count, 0, "缺 \\end 的环境不处理，否则会被拆成两半");
-  assert.equal(result.text, "\\begin{align}\na\n");
-});
-
-test("单独一行的公式命令仍然会被包成块", () => {
-  const result = convertBare("\\frac{a}{b}");
-  assert.equal(result.count, 1);
-  assert.match(result.text, /\$\$\n\\frac\{a\}\{b\}\n\$\$/);
 });

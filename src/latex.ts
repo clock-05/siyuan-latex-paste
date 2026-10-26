@@ -19,12 +19,10 @@
 export interface LatexConvertOptions {
   /** \( ... \)  →  $ ... $ */
   inline: boolean;
-  /** \[ ... \]  →  $$ ... $$（独占行时用块级，夹在文字中间时降级为行内） */
+  /** \[ ... \]  →  $$ ... $$（一律块级） */
   display: boolean;
   /** \begin{equation} / align / gather 等环境 → $$ ... $$ */
   environments: boolean;
-  /** 无定界符的裸 LaTeX 行（实验性，默认关闭） */
-  bare: boolean;
 }
 
 export interface LatexConvertResult {
@@ -37,7 +35,6 @@ export const DEFAULT_OPTIONS: LatexConvertOptions = {
   inline: true,
   display: true,
   environments: true,
-  bare: false,
 };
 
 /** 代码块 / 行内代码：这些区域里的内容一律不动 */
@@ -63,19 +60,6 @@ const ENV_RE = new RegExp(
 const BRACKET_RE = /(?<!\\)\\\[([\s\S]*?)(?<!\\)\\\]/g;
 const PAREN_RE = /(?<!\\)\\\(([\s\S]*?)(?<!\\)\\\)/g;
 
-/**
- * 裸 LaTeX 行的判定：必须是明确的数学命令，避免误伤路径、正则等普通文本。
- *
- * 特意不含 `\begin` / `\end`：环境的配对由上面第 2 步负责，
- * 裸 LaTeX 只该认「一行就是一个公式」的情况。否则一段没配对的
- * `\begin{align}` 会被单独包成块，后半截掉在外面，比不动更糟。
- */
-const BARE_LATEX_RE =
-  /\\(frac|dfrac|tfrac|sqrt|sum|prod|int|iint|oint|lim|log|ln|exp|sin|cos|tan|alpha|beta|gamma|delta|theta|lambda|mu|sigma|omega|pi|infty|partial|nabla|cdot|times|div|leq|geq|neq|approx|equiv|in|notin|subset|cup|cap|forall|exists|rightarrow|Rightarrow|leftrightarrow|Leftrightarrow)\b|\^\{|_\{/;
-
-/** 文件路径不是公式，哪怕里面正好有个 \frac */
-const PATH_LIKE_RE = /^(?:[A-Za-z]:[\\/]|\\\\|\.{1,2}[\\/]|~[\\/]|\/[A-Za-z])/;
-
 const PLACEHOLDER_OPEN = "\u0000";
 const PLACEHOLDER_CLOSE = "\u0001";
 
@@ -100,8 +84,8 @@ function blockMath(inner: string): string {
 }
 
 /**
- * 判断一个 \[ ... \] 是否独占一行。
- * 独占行 → 块级公式；夹在段落中间 → 行内公式（避免把一句话拆成三块）。
+ * 判断一段内容是否独占一行。
+ * 只用来决定 $$ ... $$ 要不要原样保留：独占行时思源自己就能解析成公式块。
  */
 function isStandalone(whole: string, offset: number, length: number): boolean {
   const before = whole.slice(0, offset);
@@ -111,32 +95,6 @@ function isStandalone(whole: string, offset: number, length: number): boolean {
   return lineStart && lineEnd;
 }
 
-function wrapBareLine(line: string): string | null {
-  const trimmed = line.trim();
-  if (trimmed.length < 3 || trimmed.length > 500) {
-    return null;
-  }
-  // 含中文、美元符号、markdown 结构符号的行不处理
-  if (/[\u4e00-\u9fa5]/.test(trimmed) || trimmed.includes("$")) {
-    return null;
-  }
-  if (/^(#|>|-|\*|\+|\||\d+\.|\[|\]|!\[)/.test(trimmed)) {
-    return null;
-  }
-  // 路径里常出现 \frac、\times 这种词，别把文件路径包成公式
-  if (PATH_LIKE_RE.test(trimmed)) {
-    return null;
-  }
-  // 环境必须成对交给上面那一步，这里见到 begin/end 就放手
-  if (/\\(?:begin|end)\s*\{/.test(trimmed)) {
-    return null;
-  }
-  if (!BARE_LATEX_RE.test(trimmed)) {
-    return null;
-  }
-  return `\n\n$$\n${trimmed}\n$$\n\n`;
-}
-
 /** 处理一段「非代码」文本 */
 function convertSegment(segment: string, options: LatexConvertOptions): LatexConvertResult {
   let count = 0;
@@ -144,11 +102,34 @@ function convertSegment(segment: string, options: LatexConvertOptions): LatexCon
   let blockInserted = false;
   const stash: string[] = [];
 
-  // 1. 先保护已经是块级公式的部分，避免二次包裹
-  let text = segment.replace(DISPLAY_MATH, (matched) => {
-    stash.push(matched);
-    return placeholder(stash.length - 1);
-  });
+  // 1. 已经是 $$ ... $$ 的：独占行就原样保护，夹在文字中间就必须升级成公式块。
+  //
+  // 为什么非改不可：思源编辑器（Protyle）里，行中间的 $$ 不会被当成公式块。
+  // Lute 的 inline_math.go 里有这么一条分支 —— ProtyleWYSIWYG 时「不允许从行级派生块级」，
+  // 遇到 $$ 只吃掉一个 $ 当普通文本，剩下的那个 $ 就去和后面公式的 $ 配对：
+  //   设 $$ A(z) $$ 记Levi矩阵 $$ B(z) $$
+  // 会被切成一堆行内公式，连中文段落都被吞进公式里，\begin{aligned} 也会丢掉 \end{aligned}。
+  // 用户看到的就是「公式环境不匹配」。所以这里把行中间的 $$ 整体搬到独立行上。
+  let text = segment.replace(
+    DISPLAY_MATH,
+    (matched: string, offset: number, whole: string) => {
+      if (isStandalone(whole, offset, matched.length)) {
+        stash.push(matched);
+        return placeholder(stash.length - 1);
+      }
+      const converted = blockMath(matched.slice(2, -2));
+      if (!converted) {
+        stash.push(matched);
+        return placeholder(stash.length - 1);
+      }
+      count++;
+      blockInserted = true;
+      // 必须也收进 stash：下面第 2 步还要处理 \begin{align} 这类环境，
+      // 刚生成的 $$ 块如果不藏起来，里面的环境会被再包一层 $$，整段直接炸掉。
+      stash.push(converted);
+      return placeholder(stash.length - 1);
+    },
+  );
 
   // 2. LaTeX 环境
   if (options.environments) {
@@ -159,15 +140,22 @@ function convertSegment(segment: string, options: LatexConvertOptions): LatexCon
     });
   }
 
-  // 3. \[ ... \]
+  // 3. \[ ... \] —— LaTeX 的块级定界符，一律当公式块。
+  //
+  // 夹在句子中间也是块：`由 \[x=1\] 可得` 会被切成「由」/ 公式 /「可得」三段。
+  // 这是刻意的取舍 —— 公式是主体，显示效果优先于段落连贯；降级成行内反而会让
+  // 带 \int、\sum 的式子挤成一团，上下标全靠右。
   if (options.display) {
-    text = text.replace(BRACKET_RE, (matched, inner: string, offset: number, whole: string) => {
-      count++;
-      const standalone = isStandalone(whole, offset, matched.length);
-      if (standalone) {
-        blockInserted = true;
+    text = text.replace(BRACKET_RE, (matched: string, inner: string) => {
+      const converted = blockMath(inner);
+      if (!converted) {
+        return matched;
       }
-      return standalone ? blockMath(inner) : inlineMath(inner);
+      count++;
+      blockInserted = true;
+      // 同样收进 stash：后面还有 \( ... \) 一步，别让它钻进来
+      stash.push(converted);
+      return placeholder(stash.length - 1);
     });
   }
 
@@ -179,30 +167,7 @@ function convertSegment(segment: string, options: LatexConvertOptions): LatexCon
     });
   }
 
-  // 5. 裸 LaTeX（默认关闭，逐行判断）
-  if (options.bare) {
-    // 上面几步刚生成的 $$ 块还没保护。不先收起来的话，裸 LaTeX 会钻进去
-    // 把 \begin{align*} / \end{align*} 再各包一层 $$，整段直接炸掉
-    text = text.replace(DISPLAY_MATH, (matched) => {
-      stash.push(matched);
-      return placeholder(stash.length - 1);
-    });
-
-    text = text
-      .split("\n")
-      .map((line) => {
-        const wrapped = wrapBareLine(line);
-        if (wrapped) {
-          count++;
-          blockInserted = true;
-          return wrapped;
-        }
-        return line;
-      })
-      .join("\n");
-  }
-
-  // 6. 还原被保护的块级公式
+  // 5. 还原被保护的块级公式
   if (stash.length > 0) {
     text = text.replace(
       new RegExp(`${PLACEHOLDER_OPEN}M(\\d+)${PLACEHOLDER_CLOSE}`, "g"),
@@ -291,16 +256,6 @@ export function hasMarkdownMath(input: string): boolean {
     return false;
   }
   return matches.some((matched) => looksLikeMath(matched.slice(1, -1)));
-}
-
-/** 快速判断内容里有没有值得处理的东西（宽松判断，只用来决定是否进入处理流程） */
-export function hasLatexDelimiters(input: string): boolean {
-  if (!input) {
-    return false;
-  }
-  return /(?<!\\)\\(?:\(|\[|begin\{(?:equation|align|alignat|flalign|gather|multline|eqnarray|displaymath|math)\*?\})/.test(
-    input,
-  );
 }
 
 /** 统计公式个数，用于「HTML 转换是否丢公式」的兜底判断 */

@@ -1,12 +1,7 @@
-import { Plugin, Setting, showMessage } from "siyuan";
+import { Plugin, showMessage } from "siyuan";
 import TurndownService from "turndown";
 import { gfm } from "turndown-plugin-gfm";
-import {
-  convertLatex,
-  countLatexDelimiters,
-  hasMarkdownMath,
-  type LatexConvertOptions,
-} from "./latex";
+import { convertLatex, countLatexDelimiters, hasMarkdownMath } from "./latex";
 import {
   extractMathNodes,
   extractSiyuanComments,
@@ -18,7 +13,6 @@ import {
 } from "./html";
 import { renderSiyuanBlocks } from "./blocks";
 import { collapseBlankLines } from "./markdown";
-import { DEFAULT_SETTINGS, SETTINGS_KEY, type LatexPasteSettings } from "./settings";
 
 interface IPasteDetail {
   protyle: any;
@@ -40,16 +34,16 @@ interface IPastePayload {
 const MAX_HTML_LENGTH = 2 * 1024 * 1024;
 
 module.exports = class LatexPaste extends Plugin {
-  private settings: LatexPasteSettings = { ...DEFAULT_SETTINGS };
   private turndown: TurndownService | null = null;
   /** 事件总线最近一次接管的时间戳，用来判断 DOM 兜底是否还需要出手 */
   private lastBusHandled = 0;
-  /** 加载结果提示，等 onLayoutReady（UI 就绪）再弹 */
+  /** 只有注册失败才有内容，等 onLayoutReady（UI 就绪）再弹；成功路径一个消息都不发 */
   private loadReport = "";
 
   async onload() {
-    await this.loadSettings();
-
+    // 这个插件没有设置项：在思源里启用即生效，停用走思源自己的插件开关。
+    // 也因此全程不写任何存储 —— saveData 会落到 petal 目录、被广播给所有窗口，
+    // 每个窗口的插件随之重载，多窗口下会变成无限重启。零写入就没有这个隐患。
     // 每一步单独 try/catch：只要有一处抛错，后面的注册就全废了。
     // 之前就是 addCommand 出问题，把 click-blockicon 一起带走了。
     const steps: string[] = [];
@@ -67,26 +61,12 @@ module.exports = class LatexPaste extends Plugin {
     attempt("paste-bus", () => this.eventBus.on("paste", this.handlePaste));
     // 路径二：DOM 捕获阶段直接改写剪贴板，不依赖思源版本
     attempt("paste-dom", () => document.addEventListener("paste", this.onDomPaste, true));
-    // 路径三：复制出去时还原 Markdown。思源自己也会 preventDefault 后异步写剪贴板，
-    // 所以这条实际拦不住，留着当兜底。
-    attempt("copy-dom", () => window.addEventListener("copy", this.onCopy, true));
 
     // 真正能用的入口，靠主动触发：
     // 块图标菜单 —— 选中块后点图标，不依赖快捷键也不依赖浏览器事件
     attempt("block-icon", () => this.eventBus.on("click-blockicon", this.onBlockIcon));
     // 内容区右键菜单 —— 选中文字后右键就能用，比顶栏更顺手
     attempt("content-menu", () => this.eventBus.on("open-menu-content", this.onContentMenu));
-    // 顶栏按钮 —— 万一菜单没出来，这个总能看见
-    attempt("topbar", () =>
-      this.addTopBar({
-        icon: "iconCopy",
-        title: this.i18n.commandCopyAsMarkdown,
-        position: "right",
-        callback: () => {
-          void this.copyAsMarkdown();
-        },
-      }),
-    );
     // 命令不带 hotkey：思源里 ⌘⇧C 是「复制块引用」，⌘⌥C 也不一定干净。
     // 想让快捷键生效，去「设置 → 快捷键」里给这个命令自己绑一个。
     attempt("command", () =>
@@ -96,35 +76,18 @@ module.exports = class LatexPaste extends Plugin {
       }),
     );
 
-    // 这里**不能**无条件写存储。
-    // saveData 会落到 data/storage/petal/<插件名>/，思源把该目录的变更广播给所有窗口，
-    // 每个窗口的插件随之重载 → 又写一次 → 无限重启。多窗口下必现。
-    // 所以正常加载零写入；只有真的注册失败、且用户开了调试时才记一笔。
     const failed = steps.filter((step) => step.includes("FAIL"));
-    if (failed.length > 0 && this.settings.debug) {
-      await this.writeDiagnose(steps);
-    }
 
-    this.log("插件已加载", JSON.stringify({ settings: this.settings, steps }));
+    this.log("插件已加载", steps);
 
     // 提示别在这里弹：onload 阶段思源的 UI 还没就绪，showMessage 会静默失效。
     // 先记下来，等 onLayoutReady 再弹。
+    // 成功路径完全静默 —— 插件正常加载不该打扰任何人。
+    // 失败才留一条，诊断价值全在这一条上（写明具体哪几项注册挂了）。
     this.loadReport =
       failed.length > 0
-        ? `LaTeX 公式粘贴：${failed.length} 项注册失败（${failed.join("；")}）`
-        : "LaTeX 公式粘贴：已加载";
-  }
-
-  /** 把注册结果写到 data/storage/petal/<插件名>/diagnose，方便外部排查 */
-  private async writeDiagnose(steps: string[]) {
-    try {
-      await this.saveData("diagnose", {
-        at: new Date().toISOString(),
-        steps,
-      });
-    } catch (error) {
-      console.error("[latex-paste] 写入诊断信息失败", error);
-    }
+        ? `数学公式粘贴：${failed.length} 项注册失败（${failed.join("；")}）`
+        : "";
   }
 
   onunload() {
@@ -132,90 +95,23 @@ module.exports = class LatexPaste extends Plugin {
     this.eventBus.off("click-blockicon", this.onBlockIcon);
     this.eventBus.off("open-menu-content", this.onContentMenu);
     document.removeEventListener("paste", this.onDomPaste, true);
-    window.removeEventListener("copy", this.onCopy, true);
     this.turndown = null;
+    // 清掉上一轮的失败提示：插件禁用/启用后不该残留任何提示。
+    // 下次启用是全新的一轮 onload，失败信息会在那里重新算。
+    this.loadReport = "";
   }
 
   onLayoutReady() {
-    this.setting = new Setting({
-      confirmCallback: () => {
-        this.saveData(SETTINGS_KEY, this.settings);
-      },
-    });
-
-    const items: Array<{ key: keyof LatexPasteSettings; title: string; description: string }> = [
-      { key: "enabled", title: this.i18n.enabled, description: this.i18n.enabledDesc },
-      { key: "keepHtmlFormat", title: this.i18n.keepHtml, description: this.i18n.keepHtmlDesc },
-      { key: "convertInline", title: this.i18n.inline, description: this.i18n.inlineDesc },
-      { key: "convertDisplay", title: this.i18n.display, description: this.i18n.displayDesc },
-      {
-        key: "convertEnvironments",
-        title: this.i18n.environments,
-        description: this.i18n.environmentsDesc,
-      },
-      {
-        key: "markdownMath",
-        title: this.i18n.markdownMath,
-        description: this.i18n.markdownMathDesc,
-      },
-      {
-        key: "copyAsMarkdown",
-        title: this.i18n.copyAsMarkdown,
-        description: this.i18n.copyAsMarkdownDesc,
-      },
-      { key: "bareLatex", title: this.i18n.bare, description: this.i18n.bareDesc },
-      { key: "debug", title: this.i18n.debug, description: this.i18n.debugDesc },
-    ];
-
-    for (const item of items) {
-      this.setting.addItem({
-        title: item.title,
-        description: item.description,
-        createActionElement: () => this.createCheckbox(item.key),
-      });
-    }
-
-    // 到这里 UI 才真的就绪，弹提示才看得见
-    if (this.settings.debug && this.loadReport) {
+    // 没有设置面板 —— 插件启用即生效。这里只负责把失败提示补上：
+    // onload 阶段思源的 UI 还没就绪，showMessage 会静默失效。
+    if (this.loadReport) {
       showMessage(this.loadReport, 5000);
     }
   }
 
+  /** 诊断日志走 console.debug：默认在 DevTools 的「详细」级别里，不刷屏 */
   private log(...args: unknown[]) {
-    if (this.settings.debug) {
-      console.log("[latex-paste]", ...args);
-    }
-  }
-
-  private createCheckbox(key: keyof LatexPasteSettings): HTMLInputElement {
-    const input = document.createElement("input");
-    input.type = "checkbox";
-    input.className = "b3-switch fn__flex-center";
-    input.checked = Boolean(this.settings[key]);
-    input.addEventListener("change", () => {
-      (this.settings as any)[key] = input.checked;
-    });
-    return input;
-  }
-
-  private async loadSettings() {
-    try {
-      const saved = await this.loadData(SETTINGS_KEY);
-      if (saved && typeof saved === "object") {
-        this.settings = { ...DEFAULT_SETTINGS, ...saved };
-      }
-    } catch (error) {
-      console.warn("[latex-paste] load settings failed", error);
-    }
-  }
-
-  private getOptions(): LatexConvertOptions {
-    return {
-      inline: this.settings.convertInline,
-      display: this.settings.convertDisplay,
-      environments: this.settings.convertEnvironments,
-      bare: this.settings.bareLatex,
-    };
+    console.debug("[latex-paste]", ...args);
   }
 
   /**
@@ -224,7 +120,7 @@ module.exports = class LatexPaste extends Plugin {
    */
   private detect(text: string, rawHtml = ""): { count: number; hasMath: boolean } {
     const count = countLatexDelimiters(text);
-    const md = this.settings.markdownMath && hasMarkdownMath(text);
+    const md = hasMarkdownMath(text);
     const nodes = rawHtml ? hasMathNodes(rawHtml) : false;
     return { count: count + (nodes ? 1 : 0), hasMath: count > 0 || md || nodes };
   }
@@ -239,10 +135,8 @@ module.exports = class LatexPaste extends Plugin {
     plain: { count: number; hasMath: boolean },
     html: { count: number; hasMath: boolean },
   ): string | null {
-    const options = this.getOptions();
-
-    if (textHTML && html.hasMath && this.settings.keepHtmlFormat) {
-      const { markdown, count } = this.htmlToMarkdown(textHTML, options);
+    if (textHTML && html.hasMath) {
+      const { markdown, count } = this.htmlToMarkdown(textHTML);
       if (count > 0 && count >= plain.count) {
         this.log("走 HTML → Markdown 路径", { count, markdown });
         return markdown;
@@ -255,7 +149,7 @@ module.exports = class LatexPaste extends Plugin {
       this.log("HTML 里的公式没抽全，回退纯文本", { count, plainCount: plain.count });
     }
 
-    const result = convertLatex(textPlain, options);
+    const result = convertLatex(textPlain);
     if (result.count > 0) {
       return result.text;
     }
@@ -274,9 +168,6 @@ module.exports = class LatexPaste extends Plugin {
     }
 
     try {
-      if (!this.settings.enabled) {
-        return;
-      }
       const protyle = detail.protyle;
       if (!protyle || protyle.options?.mode === "preview") {
         return;
@@ -332,9 +223,6 @@ module.exports = class LatexPaste extends Plugin {
    * 老版本思源的事件总线替换载荷有 bug（3.8.0 才修），这条路径不依赖版本。
    */
   private onDomPaste = (event: ClipboardEvent) => {
-    if (!this.settings.enabled) {
-      return;
-    }
     const data = event.clipboardData;
     if (!data) {
       return;
@@ -389,13 +277,9 @@ module.exports = class LatexPaste extends Plugin {
   };
 
   /**
-   * 把当前选区转成 Markdown。
-   * 没有公式、不在编辑器里、或者含图片视频时返回 null（表示别管这次复制）。
-   */
-  /**
    * 把一段 DOM 转成 Markdown。里面没有公式就返回 null（表示别管这次操作）。
    */
-  private renderMarkdown(holder: HTMLElement): { markdown: string; siyuanHTML: string } | null {
+  private renderMarkdown(holder: HTMLElement): string | null {
     // 块图标（🏷️）只是装饰，转成 Markdown 会变成一串乱码
     holder.querySelectorAll(".protyle-attr").forEach((node) => node.remove());
 
@@ -405,12 +289,12 @@ module.exports = class LatexPaste extends Plugin {
       return null;
     }
 
-    // 思源内部互相粘贴靠这个，先留一份原样的（必须在替换占位符之前取）
+    // 思源把完整的块结构塞在 data-siyuan 注释里（base64），外层 HTML 只是简化版。
+    // 先留一份原样的，必须在替换占位符之前取。
     const siyuanHTML = holder.innerHTML;
 
     // 快速排除：外层既没有公式标记、也没带思源原始注释，到此为止。
-    // 这一步很关键 —— 每次 Ctrl+C 都会走进来，而下面要跑整段 base64 解码，
-    // 复制普通文字时没必要付这个代价。
+    // 下面要跑整段 base64 解码，复制普通文字时没必要付这个代价。
     const outerHasMath = hasMathNodes(siyuanHTML);
     if (!outerHasMath && !siyuanHTML.includes("data-siyuan")) {
       return null;
@@ -454,11 +338,11 @@ module.exports = class LatexPaste extends Plugin {
     if (!markdown) {
       return null;
     }
-    return { markdown, siyuanHTML };
+    return markdown;
   }
 
   /** 一个 Range → Markdown */
-  private rangeToMarkdown(range: Range): { markdown: string; siyuanHTML: string } | null {
+  private rangeToMarkdown(range: Range): string | null {
     const anchor = range.commonAncestorContainer;
     const element =
       anchor.nodeType === Node.TEXT_NODE ? anchor.parentElement : (anchor as HTMLElement);
@@ -472,7 +356,7 @@ module.exports = class LatexPaste extends Plugin {
   }
 
   /** 当前选区 → Markdown */
-  private selectionToMarkdown(): { markdown: string; siyuanHTML: string } | null {
+  private selectionToMarkdown(): string | null {
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
       return null;
@@ -480,15 +364,15 @@ module.exports = class LatexPaste extends Plugin {
     return this.rangeToMarkdown(selection.getRangeAt(0));
   }
 
-  private async writeMarkdown(result: { markdown: string } | null) {
+  private async writeMarkdown(result: string | null) {
     if (!result) {
       showMessage(this.i18n.commandCopyEmpty);
       return;
     }
-    const ok = await this.writeToClipboard(result.markdown);
+    const ok = await this.writeToClipboard(result);
     showMessage(ok ? this.i18n.commandCopyDone : this.i18n.commandCopyFailed);
     if (ok) {
-      this.log("复制：已写入剪贴板", { markdown: result.markdown });
+      this.log("复制：已写入剪贴板", { markdown: result });
     }
   }
 
@@ -524,51 +408,9 @@ module.exports = class LatexPaste extends Plugin {
   }
 
   /**
-   * 路径三：从思源复制出去时，把公式还原成标准 Markdown。
-   *
-   * 思源自己的纯文本输出里，公式是被渲染过的字符流（∂P f/∂z̄ 会压平成一串），
-   * LaTeX 结构彻底没有。粘到 Obsidian / Typora 里根本不是公式。
-   * 好在 HTML 层里公式节点带着 data-content 属性，能精确还原。
-   *
-   * 只在选区里真的有公式时才接管，其余情况一律不动，保留思源原生行为。
-   */
-  private onCopy = (event: ClipboardEvent) => {
-    if (!this.settings.enabled || !this.settings.copyAsMarkdown) {
-      return;
-    }
-    const data = event.clipboardData;
-    if (!data) {
-      return;
-    }
-
-    try {
-      const result = this.selectionToMarkdown();
-      if (!result) {
-        return;
-      }
-
-      event.preventDefault();
-      // preventDefault 之后浏览器不会再写入默认数据，所以只要不设 text/html，
-      // 剪贴板里就只剩纯文本层，目标软件只能按 Markdown 源码接收。
-      // （别写成 setData("text/html", "")，空 HTML 会被某些软件当成"没有内容"）
-      data.setData("text/plain", result.markdown);
-      if (result.siyuanHTML) {
-        try {
-          data.setData("text/siyuan", result.siyuanHTML);
-        } catch {
-          // 少数环境不认自定义 MIME 类型，忽略即可
-        }
-      }
-      this.log("复制：已改写为 Markdown", { markdown: result.markdown });
-    } catch (error) {
-      console.error("[latex-paste] copy failed", error);
-    }
-  };
-
-  /**
    * 显式命令兜底。
    * 思源菜单里的「复制富文本」是自己写系统剪贴板的，不经过 DOM copy 事件，
-   * 上面那条拦不住，所以留一个能主动调用的入口。
+   * 所以复制只能走「主动调用」这条路。
    */
   private copyAsMarkdown = async () => {
     // 有选中内容就按选区转；没有选区就退化成「光标所在的那个块」，
@@ -616,9 +458,6 @@ module.exports = class LatexPaste extends Plugin {
    * DOM copy 事件里改的数据会被它覆盖掉，所以从块的 DOM 主动生成才稳。
    */
   private onBlockIcon = ({ detail }: any) => {
-    if (!this.settings.enabled || !this.settings.copyAsMarkdown) {
-      return;
-    }
     const blocks: HTMLElement[] = detail?.blockElements ?? [];
     const menu = detail?.menu;
     if (!blocks.length || !menu || typeof menu.addItem !== "function") {
@@ -640,27 +479,14 @@ module.exports = class LatexPaste extends Plugin {
    * Markdown 在弹出菜单时就算好，点击时直接用 —— 菜单弹出后选区可能已经变了。
    */
   private onContentMenu = ({ detail }: any) => {
-    if (!this.settings.enabled || !this.settings.copyAsMarkdown) {
-      void this.writeMenuProbe({ skipped: "设置里没开" });
-      return;
-    }
     const menu = detail?.menu;
     if (!menu || typeof menu.addItem !== "function") {
-      void this.writeMenuProbe({
-        skipped: "detail 里没有可用的 menu",
-        detailKeys: detail ? Object.keys(detail) : [],
-      });
       return;
     }
 
     const range: Range | undefined = detail?.range;
     const result = range ? this.rangeToMarkdown(range) : this.selectionToMarkdown();
     if (!result) {
-      void this.writeMenuProbe({
-        skipped: "选区里没找到公式",
-        hasRange: Boolean(range),
-        rangeCollapsed: range?.collapsed ?? null,
-      });
       return;
     }
 
@@ -671,34 +497,10 @@ module.exports = class LatexPaste extends Plugin {
         void this.writeMarkdown(result);
       },
     });
-    // 思源会把插件注入的项收进菜单末尾的「插件」子菜单，不是顶层。
-    // 这里留个探针，确认到底注入成功没有。
-    void this.writeMenuProbe({ injected: true, chars: result.markdown.length });
   };
 
-  /**
-   * 右键菜单探针。
-   *
-   * 每次右键都写 petal 存储会在多窗口下引发反复重载（同 onload 那个问题），
-   * 所以只允许写一次，且必须显式打开调试开关。功能本身已验证可用，
-   * 这里仅作为将来排查的兜底。
-   */
-  private menuProbeWritten = false;
-
-  private async writeMenuProbe(info: Record<string, unknown>) {
-    if (!this.settings.debug || this.menuProbeWritten) {
-      return;
-    }
-    this.menuProbeWritten = true;
-    try {
-      await this.saveData("menu-probe", { at: new Date().toISOString(), ...info });
-    } catch {
-      // 探针失败不影响主流程
-    }
-  }
-
   /** 一组块的 DOM → Markdown */
-  private blocksToMarkdown(blocks: HTMLElement[]): { markdown: string; siyuanHTML: string } | null {
+  private blocksToMarkdown(blocks: HTMLElement[]): string | null {
     const holder = document.createElement("div");
     for (const block of blocks) {
       holder.appendChild(block.cloneNode(true));
@@ -751,7 +553,7 @@ module.exports = class LatexPaste extends Plugin {
     return this.turndown;
   }
 
-  private htmlToMarkdown(html: string, options: LatexConvertOptions): { markdown: string; count: number } {
+  private htmlToMarkdown(html: string): { markdown: string; count: number } {
     let bodyHtml = html;
     const segments: MathSegment[] = [];
     try {
@@ -768,7 +570,7 @@ module.exports = class LatexPaste extends Plugin {
 
     const { html: stashed } = stashMathInHtml(bodyHtml, segments);
     const restored = restoreMath(this.turndownService().turndown(stashed), segments);
-    const result = convertLatex(restored, options);
+    const result = convertLatex(restored);
     // 已还原成思源公式的部分 + 转换阶段新处理的定界符
     return { markdown: result.text, count: segments.length + result.count };
   }
