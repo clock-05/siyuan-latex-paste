@@ -41,7 +41,7 @@ const CLOSE = "\uE001";
 
 const token = (index: number) => `${OPEN}${index}${CLOSE}`;
 
-export const HTML_TOKEN_RE = new RegExp(`${OPEN}(\\d+)${CLOSE}`, "g");
+const HTML_TOKEN_RE = new RegExp(`${OPEN}(\\d+)${CLOSE}`, "g");
 
 /** 整行只有一个占位符（行首最多带缩进和 `>`）—— 块级公式最常见的样子 */
 const TOKEN_LINE_RE = new RegExp(`^([ \\t>]*)${OPEN}(\\d+)${CLOSE}[ \\t]*$`, "gm");
@@ -294,6 +294,11 @@ function isDisplayNode(node: HTMLElement): boolean {
   if (type === "inline-math") {
     return false;
   }
+  // KaTeX 的展示公式外面套了一层 .katex-display。只看到里面的 span.katex 就判成行内的话，
+  // 从网页复制的 \int、\sum 这类大公式会挤在一行里 —— 来源本来就是独立成块的。
+  if (typeof node.closest === "function" && node.closest(".katex-display")) {
+    return true;
+  }
   if (node.classList.contains("katex") || node.classList.contains("math")) {
     return false;
   }
@@ -423,7 +428,7 @@ const ENTITIES: Record<string, string> = {
  */
 const ENTITY_RE = /&(?:(lt|gt|amp|quot|apos|nbsp)|#(\d+)|#[xX]([0-9a-fA-F]+));/g;
 
-export function decodeEntities(text: string): string {
+function decodeEntities(text: string): string {
   if (!text.includes("&")) {
     return text;
   }

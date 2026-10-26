@@ -571,7 +571,8 @@ test("单引号属性 / katex-display 也能识别并救回公式", async () => 
   });
 
   assert.ok(resolved, "应该被插件接管");
-  assert.match(resolved.textPlain, /\$x\^2\$/, "应该从 annotation 里救回 LaTeX");
+  // katex-display 说明来源是展示公式，还原成 $$ 块；只当行内会让大公式挤在一行里
+  assert.match(resolved.textPlain, /\$\$\nx\^2\n\$\$/, "应该从 annotation 里救回 LaTeX，并保留块级形态");
 });
 
 test("真实块结构：行内 + 块级公式混排", async () => {

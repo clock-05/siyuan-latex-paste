@@ -31,7 +31,7 @@ export interface LatexConvertResult {
   count: number;
 }
 
-export const DEFAULT_OPTIONS: LatexConvertOptions = {
+const DEFAULT_OPTIONS: LatexConvertOptions = {
   inline: true,
   display: true,
   environments: true,
