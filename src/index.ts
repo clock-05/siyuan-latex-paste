@@ -473,7 +473,8 @@ module.exports = class LatexPaste extends Plugin {
     }
     // 块里没有公式时这条命令什么也复制不出来（renderMarkdown 会直接返回空），
     // 挂上去只会让用户点完收到一句「没有公式」。和右键菜单保持一致：有公式才出现
-    if (!blocks.some((block) => hasMathNodes(block.innerHTML))) {
+    // Array.from：思源传的是数组，但别的版本给过类数组，.some 不能想当然
+    if (!Array.from(blocks).some((block) => hasMathNodes(block.innerHTML))) {
       return;
     }
     menu.addItem({

@@ -35,7 +35,7 @@
 ```bash
 npm run dev        # 监听构建，产物直接进工作区（.env 里配 SIYUAN_WORKSPACE）
 npm run build      # 一次性构建到 dist/
-npm test           # 101 个用例
+npm test           # 103 个用例
 npm run typecheck  # 类型检查
 ```
 

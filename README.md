@@ -35,7 +35,7 @@ Paste math formulas into SiYuan and they become native formulas; copy them out a
 ```bash
 npm run dev        # watch build, output goes straight into the workspace (SIYUAN_WORKSPACE in .env)
 npm run build      # one-off build into dist/
-npm test           # 101 test cases
+npm test           # 103 test cases
 npm run typecheck  # type check
 ```
 

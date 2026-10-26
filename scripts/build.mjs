@@ -97,19 +97,45 @@ const options = {
   logLevel: "info",
 };
 
+/**
+ * watch 模式下每次重建都要同步。
+ *
+ * 之前只在启动时同步了一次，之后 esbuild 反复重写 dist/index.js，
+ * 工作区里却一直是启动时那份 —— 改了源码、在思源里刷新，看到的还是旧版本。
+ */
+const syncOnRebuild = {
+  name: "sync-workspace",
+  setup(build) {
+    build.onEnd((result) => {
+      if (result.errors.length > 0) {
+        return;
+      }
+      try {
+        // 静态文件也重拷一遍：改 plugin.json / i18n 时同样要同步过去
+        copyStatic(outdir);
+        syncToWorkspace();
+        console.log(`[sync] ${new Date().toLocaleTimeString()} → ${syncDir}`);
+      } catch (error) {
+        console.error("[sync] 同步到工作区失败", error);
+      }
+    });
+  },
+};
+
+if (watch && syncDir) {
+  options.plugins = [syncOnRebuild];
+}
+
 copyStatic(outdir);
 
 if (watch) {
   const ctx = await esbuild.context(options);
   await ctx.watch();
-  if (syncDir) {
-    syncToWorkspace();
-  }
   console.log(`\nWatching... output: ${outdir}`);
   if (syncDir) {
     console.log(`同步目录: ${syncDir}`);
   }
-  console.log("改动源码后会自动重新构建，在思源里刷新插件即可看到效果。\n");
+  console.log("改动源码后会自动重新构建并同步，在思源里刷新插件即可看到效果。\n");
 } else {
   await esbuild.build(options);
   if (syncDir) {

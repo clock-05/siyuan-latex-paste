@@ -178,6 +178,24 @@ test("句子中间的 \\[见附录\\] 不当公式", () => {
   assert.equal(result.text, "见 \\[见附录\\] 一节");
 });
 
+test("描述语法用的 \\( 公式 \\) 不被当成公式", () => {
+  const input = "行内公式写成 \\( 公式 \\) 这样";
+  const result = convert(input);
+  assert.equal(result.count, 0, "作者是在讲语法，不是在写公式");
+  assert.equal(result.text, input);
+});
+
+test("跨空行的定界符配不成对，原样保留", () => {
+  // 行内公式不可能跨空行 —— 这种是文档里落单的定界符抓错了搭档
+  const paren = "见 \\( 第一段\n\n第二段 \\) 结束";
+  assert.equal(convert(paren).count, 0);
+  assert.equal(convert(paren).text, paren);
+
+  const dollar = "公式 $$ a\n\nb $$ 结束";
+  assert.equal(convert(dollar).count, 0);
+  assert.equal(convert(dollar).text, dollar);
+});
+
 test("空字符串安全", () => {
   assert.deepEqual(convert(""), { text: "", count: 0 });
 });

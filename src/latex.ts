@@ -136,6 +136,17 @@ function looksLikeProse(body: string): boolean {
 }
 
 /**
+ * 内容中间夹着空行 —— 说明这两个定界符根本配不成一对。
+ *
+ * 公式（行内也好、块级也好）都不可能跨空行存在：Markdown 遇到空行就把段落断开，
+ * 公式在那之前就结束了。所以跨空行的「公式」一定是文档里落单的定界符抓错了搭档，
+ * 硬转只会把前后两段正文吞进来。
+ */
+function spansParagraphs(body: string): boolean {
+  return /\n[ \t]*\n/.test(body);
+}
+
+/**
  * 去掉代码段（围栏代码块 / 行内代码），只留下正文。
  *
  * 检测阶段必须和转换阶段用同一套「哪里算代码」的规则：代码里的 \( ... \)
@@ -171,8 +182,8 @@ function convertSegment(segment: string, options: LatexConvertOptions): LatexCon
         return placeholder(stash.length - 1);
       }
       const inner = matched.slice(2, -2);
-      // 落单的 $$ 可能一直配到后文去，中间隔着整段中文。这种不要包成公式
-      if (looksLikeProse(inner)) {
+      // 落单的 $$ 可能一直配到后文去，中间隔着整段中文或空行。这种不要包成公式
+      if (looksLikeProse(inner) || spansParagraphs(inner)) {
         stash.push(matched);
         return placeholder(stash.length - 1);
       }
@@ -214,8 +225,11 @@ function convertSegment(segment: string, options: LatexConvertOptions): LatexCon
     text = text.replace(
       BRACKET_RE,
       (matched: string, inner: string, offset: number, whole: string) => {
-        // 句子中间的 \[见附录\] 不是公式，原样留着
-        if (!isStandalone(whole, offset, matched.length) && looksLikeProse(inner)) {
+        // 句子中间的 \[见附录\] 不是公式，跨空行的更不是，都原样留着
+        if (
+          !isStandalone(whole, offset, matched.length) &&
+          (looksLikeProse(inner) || spansParagraphs(inner))
+        ) {
           return matched;
         }
         const converted = blockMath(inner);
@@ -233,7 +247,12 @@ function convertSegment(segment: string, options: LatexConvertOptions): LatexCon
 
   // 4. \( ... \)
   if (options.inline) {
-    text = text.replace(PAREN_RE, (_matched, inner: string) => {
+    text = text.replace(PAREN_RE, (matched: string, inner: string) => {
+      // 两个反斜杠括号之间夹着一整段中文、或者跨了空行：这是落单的定界符配错了对。
+      // 行内公式不可能跨空行，硬转会把两段正文并进一个 $…$ 里
+      if (looksLikeProse(inner) || spansParagraphs(inner)) {
+        return matched;
+      }
       count++;
       return inlineMath(inner);
     });
