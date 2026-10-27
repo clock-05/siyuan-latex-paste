@@ -10,7 +10,7 @@
   "frontends": [
     "desktop"
   ],
-  "disabledInPublish": false,
+  "disabledInPublish": true,
   "displayName": {
     "default": "Math Formula Paste",
     "zh-CN": "数学公式粘贴"
