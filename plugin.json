@@ -3,7 +3,7 @@
   "author": "clock-05, DeepSeek",
   "url": "https://github.com/clock-05/siyuan-latex-paste",
   "version": "1.0.0",
-  "minAppVersion": "3.8.8",
+  "minAppVersion": "3.8.0",
   "backends": [
     "windows"
   ],
