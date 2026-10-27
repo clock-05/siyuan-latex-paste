@@ -1,6 +1,6 @@
 {
   "name": "siyuan-latex-paste",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "description": "SiYuan plugin: math formulas in and out — paste them as native formulas, copy them as Markdown",
   "author": "clock-05, DeepSeek",
