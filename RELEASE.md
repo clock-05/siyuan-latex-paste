@@ -1,97 +1,67 @@
-# 发布到思源集市
+# 发版
 
-集市只做一件事：从你仓库的 **Latest Release** 里下载 `package.zip`。所以整个流程的核心是「让每次发版都产出一个合规的 package.zip」，`.github/workflows/release.yml` 已经把这步自动化了。
+集市只从仓库的 **Latest Release** 下载 `package.zip`，而 `.github/workflows/release.yml`
+会在推 tag 时自动产出它。所以发版就三件事：改版本号 → 推 `main` → 推 tag，剩下的 CI 全包。
 
-## 一次性准备
+## 1. 同步四处版本号
 
-### 1. 建仓库
+| 位置 | 改什么 |
+| --- | --- |
+| `plugin.json` | `version` |
+| `package.json` | `version` |
+| `package-lock.json` | 顶层 `version` 和 `packages[""].version` |
+| tag 名 | `v` + 同一个版本号 |
 
-- 仓库名**必须**是 `siyuan-latex-paste`（与 `plugin.json` 的 `name` 完全一致，集市靠这个匹配）
-- 默认分支**必须**是 `main`
-- 仓库需要公开
+四处必须一致。锁文件漏改会让 `npm ci` 报版本冲突，CI 直接挂。
 
-```bash
-git init -b main
-git add .
-git commit -m "feat: 初版"
-git remote add origin https://github.com/<你的用户名>/siyuan-latex-paste.git
-git push -u origin main
-```
-
-### 2. 改掉占位地址
-
-`plugin.json` 里的 `url` 和 `author` 现在是占位的，换成真实的：
-
-```json
-"author": "你的名字",
-"url": "https://github.com/你的用户名/siyuan-latex-paste",
-```
-
-### 3. 确认这几项
-
-| 项 | 要求 | 当前 |
-| --- | --- | --- |
-| `name` | 与仓库名一致，且集市内不重名 | `siyuan-latex-paste` |
-| `version` | semver，且与 release tag 对应 | `0.2.8` |
-| `minAppVersion` | 用到的 API 的最低版本 | `3.1.0` |
-| `icon` | ≤ 64 KiB，建议 160×160 | 160×160，9 KB |
-| `preview` | ≤ 512 KiB，建议 1024×768 | 1024×768，9 KB |
-| `index.css` | **必须存在**（哪怕没样式） | 已补 |
-| `displayName` / `description` / `readme` | 必须有 `default`，其他语言用 BCP 47（`zh-CN` 而不是 `zh_CN`） | 已改 |
-| README | 中英各一份 | `README.md` / `README.zh-CN.md` |
-
-> 注意 `i18n/` 目录下的文件名仍然是 `zh_CN.json`（下划线），这是思源自己 i18n 的约定；而 `plugin.json` 里的语言键要用 `zh-CN`（连字符）。两者不一样，别改错。
-
-## 发第一个版本
+## 2. 本地验证
 
 ```bash
-git tag v0.2.8
-git push origin v0.2.8
+npm run verify   # 类型检查 + 105 个测试
+npm run build    # 构建到 dist/，并同步到 .env 里配的工作区
 ```
 
-tag 一推，`release.yml` 就会跑：装依赖 → 类型检查 → 66 个测试 → 构建 → 打 `package.zip` → 校验里面确实有 `index.js`、`index.css`、`plugin.json` → 发 Release。
-
-去 Actions 页面确认跑绿了，再去 Releases 看有没有 `package.zip` 附件。
-
-## 提交到集市
-
-1. Fork [siyuan-note/bazaar](https://github.com/siyuan-note/bazaar)
-2. 在仓库根目录的 `plugins.txt` 里加一行（**只加一行，不要加逗号或空行**）：
-
-   ```
-   你的用户名/siyuan-latex-paste
-   ```
-
-3. 向 `main` 分支开 PR
-
-PR 会自动跑 `PR Check`，检查 release 是否存在、`package.zip` 是否合规、metadata 字段是否齐全。挂了就按提示改**同一流水线里的东西**，然后等定时任务自动重跑（约 20 分钟一次），**不要新开 PR**。
-
-合并后几分钟内集市索引就更新了，思源里**重启一次**才能刷到。
-
-## 后续更新
-
-不用再提 PR。改版本号、打 tag、推上去就行：
+## 3. 推上去
 
 ```bash
-# 1. 同步两处版本号
-#    plugin.json 的 version
-#    package.json 的 version
-# 2. 打 tag
-git tag v0.2.9
-git push origin v0.2.9
+git add -A && git commit -m "chore: 1.0.2"
+git push origin main
+git tag -a v1.0.2 -m "1.0.2"
+git push origin v1.0.2
 ```
 
-集市每 1~3 小时拉一次索引。发布后 1~3 小时内用户就能在集市里看到更新。
+**只有推 tag 会触发发版**，只推 `main` 什么都不会发生。
+
+## 4. CI 做什么（约 1 分钟）
+
+`npm ci` → `npm run verify` → `npm run build` → 在 Linux 上 `zip` 打 `package.zip`
+→ 校验包里有 `index.js`、`index.css`、`plugin.json` → 建 Release（说明由提交信息自动生成）。
+
+去 Actions 看跑绿、去 Releases 看 `package.zip` 在不在，就完事了。
+
+## 5. 集市什么时候更新
+
+每 1~3 小时拉一次索引，思源里**重启**才能刷到新版本。
+
+仓库已经在 `siyuan-note/bazaar` 的 `plugins.txt` 里（`clock-05/siyuan-latex-paste`），
+**不用再提 PR**，以后每次都自动读最新 Release。
 
 ## 容易踩的坑
 
-- **仓库名和 `name` 不一致** —— 最常见，直接 PR Check 失败。
-- **忘了升 `version`** —— 集市认为没有新版本，索引不更新。
-- **`package.zip` 里少了 `index.css`** —— 硬性要求，缺了必挂。
-- **`icon.png` 超过 64 KiB 或尺寸不是正方形** —— 集市展示会出问题。
-- **`plugin.json` 里写 `zh_CN`** —— 必须 BCP 47 的 `zh-CN`。
-- **`.env` 提交上去了** —— 里面有你的本地工作区路径，`.gitignore` 已经挡住，提交前 `git status` 扫一眼。
+- **只推 `main` 不推 tag** —— 没有发版动作。
+- **版本号和 tag 对不上** —— 集市认为没更新，索引不动。
+- **忘了改 `package-lock.json`** —— `npm ci` 版本冲突。
+- **`plugin.json` 里写 `zh_CN`** —— 必须 BCP 47 的 `zh-CN`；`i18n/` 目录名仍是下划线，两者不一样。
+- **改 `dist/` 再手动打包** —— CI 会重新构建，本地改动全部作废。
+- **Windows 的 `Compress-Archive`** —— 路径分隔符是 `\`，不合规范。要试包就在 Git Bash 里用 `zip`。
+- **`icon.png` 超 64 KiB 或不是正方形** —— 集市卡片展示会出问题。
+- **`.env` 提交上去** —— 里面有本地工作区路径，`.gitignore` 已挡住，提交前 `git status` 扫一眼。
 
-## 关于构建产物
+## 两个不能改的东西
 
-`dist/` 在 `.gitignore` 里，不入库。CI 每次现场构建，产物只进 `package.zip`。这样做的好处是仓库里只有源码，diff 干净。
+| 东西 | 原因 |
+| --- | --- |
+| `name`（`siyuan-latex-paste`） | 与仓库名绑定，改了等于变成另一个插件，集市会当成新包 |
+| 已发布的 tag | 集市按 tag 找 Release，删了会让线上版本回退 |
+
+`displayName` 是自由的，改名不影响任何东西。
